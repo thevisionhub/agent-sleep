@@ -131,7 +131,7 @@ def run_benchmark_condition(condition: str) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp_root:
         root_path = Path(tmp_root)
         db_path = root_path / f"{condition.lower()}_bench.db"
-        memory = AgentMemory(session_id=f"eval_{condition.lower()}", db_path=db_path) if condition != "BASELINE" else None
+        memory = AgentMemory(session_id=f"eval_{condition.lower()}", db_path=db_path) if condition != "NO_MEMORY" else None
         consolidator = SleepConsolidator(db_path=db_path) if condition == "AGENT_SLEEP" else None
 
         results = []
@@ -148,27 +148,54 @@ def run_benchmark_condition(condition: str) -> Dict[str, Any]:
 
 
 def main():
-    print("=" * 72)
-    print(" AGENT-SLEEP: AGENT EVALUATION BENCHMARK SUITE")
-    print("=" * 72)
+    import datetime
+    from agent_sleep.storage.embeddings import get_backend_info
 
-    baseline = run_benchmark_condition("BASELINE")
-    naive_rag = run_benchmark_condition("NAIVE_RAG")
-    agent_sleep = run_benchmark_condition("AGENT_SLEEP")
+    backend_info = get_backend_info()
+    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    SEP = "-" * 72
+    print("=" * 80)
+    print(" AGENT-SLEEP: CANONICAL 4-WAY AGENT EVALUATION BENCHMARK SUITE")
+    print(f" Timestamp: {timestamp} | Backend: {backend_info['backend']} ({backend_info['mode']})")
+    print("=" * 80)
+
+    conditions = ["NO_MEMORY", "RAW_TRANSCRIPT", "VECTOR_RAG", "AGENT_SLEEP"]
+    results = []
+    for cond in conditions:
+        print(f"  Evaluating condition: {cond}...")
+        res = run_benchmark_condition(cond)
+        results.append(res)
+
+    SEP = "-" * 80
     print(f"\n{SEP}")
-    print(f"{'Condition':<18} {'Pass Rate':<12} {'Avg Calls':<14} {'Repeated Mistakes':<18} {'Memory Usefulness':<18}")
+    print(f"{'Condition':<18} {'Pass Rate':<12} {'Avg Calls':<12} {'Repeated Mistakes':<20} {'Memory Usefulness':<18}")
     print(SEP)
-    for res in [baseline, naive_rag, agent_sleep]:
+    for res in results:
         print(
             f"{res['condition']:<18} "
             f"{res['pass_rate']:>7.0%}      "
-            f"{res['avg_llm_calls']:>8.1f}      "
-            f"{res['repeated_mistakes']:>14d}      "
+            f"{res['avg_llm_calls']:>8.1f}    "
+            f"{res['repeated_mistakes']:>14d}        "
             f"{res.get('memory_usefulness_rate', 0.0):>14.0%}"
         )
     print(f"{SEP}\n")
+
+    # Save reproducibility artifact
+    report = {
+        "metadata": {
+            "timestamp": timestamp,
+            "version": "0.1.2-alpha",
+            "python_version": sys.version,
+            "embedding_backend": backend_info,
+            "seed": 42,
+            "temperature": 0.0,
+            "task_count": len(EVAL_TASKS),
+        },
+        "results": results,
+    }
+    out_file = Path(__file__).parent / "results.json"
+    out_file.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    print(f"Saved canonical benchmark results and reproducibility report to: {out_file}")
 
 
 if __name__ == "__main__":

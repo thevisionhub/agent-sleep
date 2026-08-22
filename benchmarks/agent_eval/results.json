@@ -1,0 +1,215 @@
+{
+  "metadata": {
+    "timestamp": "2026-08-22T15:33:10.619610+00:00",
+    "version": "0.1.2-alpha",
+    "python_version": "3.11.15 (main, Jun  2 2026, 22:29:49) [MSC v.1944 64 bit (AMD64)]",
+    "embedding_backend": {
+      "backend": "sentence_transformers",
+      "mode": "semantic",
+      "model": "all-MiniLM-L6-v2",
+      "dimension": 384,
+      "is_fallback": false
+    },
+    "seed": 42,
+    "temperature": 0.0,
+    "task_count": 4
+  },
+  "results": [
+    {
+      "total_tasks": 4,
+      "passed_tasks": 2,
+      "pass_rate": 0.5,
+      "repeated_mistakes": 0,
+      "repeated_mistake_rate": 0.0,
+      "avg_llm_calls": 2.0,
+      "total_duration_seconds": 6.7,
+      "memory_usefulness_rate": 0.0,
+      "condition": "NO_MEMORY",
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "passed": false,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 2.76,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.23,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.22,
+          "memory_useful": false
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Repeat Domain)",
+          "passed": false,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.49,
+          "memory_useful": false
+        }
+      ]
+    },
+    {
+      "total_tasks": 4,
+      "passed_tasks": 2,
+      "pass_rate": 0.5,
+      "repeated_mistakes": 0,
+      "repeated_mistake_rate": 0.0,
+      "avg_llm_calls": 2.0,
+      "total_duration_seconds": 6.07,
+      "memory_usefulness_rate": 0.0,
+      "condition": "RAW_TRANSCRIPT",
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "passed": false,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.89,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.26,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.24,
+          "memory_useful": false
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Repeat Domain)",
+          "passed": false,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.68,
+          "memory_useful": false
+        }
+      ]
+    },
+    {
+      "total_tasks": 4,
+      "passed_tasks": 2,
+      "pass_rate": 0.5,
+      "repeated_mistakes": 0,
+      "repeated_mistake_rate": 0.0,
+      "avg_llm_calls": 2.0,
+      "total_duration_seconds": 6.5,
+      "memory_usefulness_rate": 0.0,
+      "condition": "VECTOR_RAG",
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "passed": false,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.62,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.31,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.79,
+          "memory_useful": false
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Repeat Domain)",
+          "passed": false,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.78,
+          "memory_useful": false
+        }
+      ]
+    },
+    {
+      "total_tasks": 4,
+      "passed_tasks": 3,
+      "pass_rate": 0.75,
+      "repeated_mistakes": 0,
+      "repeated_mistake_rate": 0.0,
+      "avg_llm_calls": 2.0,
+      "total_duration_seconds": 6.91,
+      "memory_usefulness_rate": 0.0,
+      "condition": "AGENT_SLEEP",
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 2.03,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.65,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "passed": true,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.24,
+          "memory_useful": false
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Repeat Domain)",
+          "passed": false,
+          "llm_calls": 2,
+          "repeated_mistake": false,
+          "duration_seconds": 1.99,
+          "memory_useful": false
+        }
+      ]
+    }
+  ]
+}
