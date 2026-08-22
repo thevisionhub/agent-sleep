@@ -1,0 +1,466 @@
+{
+  "metadata": {
+    "benchmark": "agent-sleep Live LLM Agent Evaluation",
+    "timestamp": "2026-08-22T16:53:45.501233+00:00",
+    "provider": "mock",
+    "model": "default",
+    "embedding_backend": {
+      "backend": "sentence_transformers",
+      "mode": "semantic",
+      "model": "all-MiniLM-L6-v2",
+      "dimension": 384,
+      "is_fallback": false
+    },
+    "task_count": 8
+  },
+  "results": [
+    {
+      "condition": "NO_MEMORY",
+      "total_tasks": 8,
+      "zero_shot_pass_rate": 0.125,
+      "final_pass_rate": 0.625,
+      "avg_llm_calls": 2.62,
+      "repeated_traps": 4,
+      "memory_usefulness_rate": 0.0,
+      "token_usage": {
+        "prompt_tokens": 3157,
+        "completion_tokens": 680,
+        "total_tokens": 3837
+      },
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.253,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.197,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.012,
+          "memory_useful": false
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Transfer SQL)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.182,
+          "memory_useful": false
+        },
+        {
+          "task_id": 5,
+          "name": "Async Event Batch Processor (Transfer Python)",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.053,
+          "memory_useful": false
+        },
+        {
+          "task_id": 6,
+          "name": "HTTP Webhook Dispatcher with Retry (Transfer API)",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.013,
+          "memory_useful": false
+        },
+        {
+          "task_id": 7,
+          "name": "PostgreSQL Connection Pool Init (Novel Domain)",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.002,
+          "memory_useful": false
+        },
+        {
+          "task_id": 8,
+          "name": "SQLite In-Memory Fast Cache (Contextual Exception)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.138,
+          "memory_useful": false
+        }
+      ]
+    },
+    {
+      "condition": "RAW_TRANSCRIPT",
+      "total_tasks": 8,
+      "zero_shot_pass_rate": 0.375,
+      "final_pass_rate": 0.625,
+      "avg_llm_calls": 2.38,
+      "repeated_traps": 3,
+      "memory_usefulness_rate": 0.25,
+      "token_usage": {
+        "prompt_tokens": 3425,
+        "completion_tokens": 620,
+        "total_tokens": 4045
+      },
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.227,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.094,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.012,
+          "memory_useful": true
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Transfer SQL)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.215,
+          "memory_useful": false
+        },
+        {
+          "task_id": 5,
+          "name": "Async Event Batch Processor (Transfer Python)",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.067,
+          "memory_useful": false
+        },
+        {
+          "task_id": 6,
+          "name": "HTTP Webhook Dispatcher with Retry (Transfer API)",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.013,
+          "memory_useful": true
+        },
+        {
+          "task_id": 7,
+          "name": "PostgreSQL Connection Pool Init (Novel Domain)",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.001,
+          "memory_useful": false
+        },
+        {
+          "task_id": 8,
+          "name": "SQLite In-Memory Fast Cache (Contextual Exception)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.126,
+          "memory_useful": false
+        }
+      ]
+    },
+    {
+      "condition": "VECTOR_RAG",
+      "total_tasks": 8,
+      "zero_shot_pass_rate": 0.125,
+      "final_pass_rate": 0.625,
+      "avg_llm_calls": 2.62,
+      "repeated_traps": 4,
+      "memory_usefulness_rate": 0.0,
+      "token_usage": {
+        "prompt_tokens": 3157,
+        "completion_tokens": 680,
+        "total_tokens": 3837
+      },
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.296,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.095,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.033,
+          "memory_useful": false
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Transfer SQL)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.205,
+          "memory_useful": false
+        },
+        {
+          "task_id": 5,
+          "name": "Async Event Batch Processor (Transfer Python)",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.077,
+          "memory_useful": false
+        },
+        {
+          "task_id": 6,
+          "name": "HTTP Webhook Dispatcher with Retry (Transfer API)",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.033,
+          "memory_useful": false
+        },
+        {
+          "task_id": 7,
+          "name": "PostgreSQL Connection Pool Init (Novel Domain)",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.019,
+          "memory_useful": false
+        },
+        {
+          "task_id": 8,
+          "name": "SQLite In-Memory Fast Cache (Contextual Exception)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.164,
+          "memory_useful": false
+        }
+      ]
+    },
+    {
+      "condition": "AGENT_SLEEP",
+      "total_tasks": 8,
+      "zero_shot_pass_rate": 0.375,
+      "final_pass_rate": 0.625,
+      "avg_llm_calls": 2.38,
+      "repeated_traps": 2,
+      "memory_usefulness_rate": 0.375,
+      "token_usage": {
+        "prompt_tokens": 6268,
+        "completion_tokens": 649,
+        "total_tokens": 6917
+      },
+      "task_details": [
+        {
+          "task_id": 1,
+          "name": "Concurrent Balance Updater",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.396,
+          "memory_useful": false
+        },
+        {
+          "task_id": 2,
+          "name": "Async Event Stream Collector",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": false,
+          "action_modified_by_memory": false,
+          "duration_seconds": 0.267,
+          "memory_useful": false
+        },
+        {
+          "task_id": 3,
+          "name": "HTTP Client with Exponential Backoff",
+          "first_attempt_passed": false,
+          "final_passed": true,
+          "llm_calls": 2,
+          "retries_used": 1,
+          "repeated_mistake": false,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.183,
+          "memory_useful": false
+        },
+        {
+          "task_id": 4,
+          "name": "Concurrent SQLite Settlement (Transfer SQL)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.467,
+          "memory_useful": false
+        },
+        {
+          "task_id": 5,
+          "name": "Async Event Batch Processor (Transfer Python)",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.226,
+          "memory_useful": true
+        },
+        {
+          "task_id": 6,
+          "name": "HTTP Webhook Dispatcher with Retry (Transfer API)",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.193,
+          "memory_useful": true
+        },
+        {
+          "task_id": 7,
+          "name": "PostgreSQL Connection Pool Init (Novel Domain)",
+          "first_attempt_passed": true,
+          "final_passed": true,
+          "llm_calls": 1,
+          "retries_used": 0,
+          "repeated_mistake": false,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.166,
+          "memory_useful": true
+        },
+        {
+          "task_id": 8,
+          "name": "SQLite In-Memory Fast Cache (Contextual Exception)",
+          "first_attempt_passed": false,
+          "final_passed": false,
+          "llm_calls": 4,
+          "retries_used": 3,
+          "repeated_mistake": true,
+          "action_modified_by_memory": true,
+          "duration_seconds": 0.348,
+          "memory_useful": false
+        }
+      ]
+    }
+  ]
+}

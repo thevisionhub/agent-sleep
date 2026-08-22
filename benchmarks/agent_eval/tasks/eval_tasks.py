@@ -24,9 +24,8 @@ EVAL_TASKS: List[EvalTask] = [
         domain="SQL",
         trap_category="sqlite_busy_lock",
         description=(
-            "Fix concurrent balance updates in account_service.py. "
-            "Configure SQLite WAL mode (PRAGMA journal_mode=WAL) and busy timeout (PRAGMA busy_timeout=5000) "
-            "so concurrent threads succeed without database locked errors."
+            "Implement concurrent balance transfers in account_service.py "
+            "so that multiple background worker threads can execute simultaneously without database locking errors."
         ),
         initial_files={
             "account_service.py": (
@@ -67,9 +66,8 @@ EVAL_TASKS: List[EvalTask] = [
         domain="Python",
         trap_category="async_generator_syntax",
         description=(
-            "Fix async stream collector in streamer.py. "
-            "Iterating an async generator with synchronous for loop raises TypeError. "
-            "Use async for inside an async function."
+            "Implement async stream collector in streamer.py "
+            "to collect all values from fetch_numbers generator."
         ),
         initial_files={
             "streamer.py": (
@@ -100,8 +98,7 @@ EVAL_TASKS: List[EvalTask] = [
         domain="API_calls",
         trap_category="missing_rate_limit_retry",
         description=(
-            "Fix HTTP client in client.py to catch 429 Too Many Requests, "
-            "parse Retry-After header, and retry with backoff instead of crashing."
+            "Implement HTTP client in client.py to fetch data with resilient error handling when encountering HTTP 429 rate limit errors."
         ),
         initial_files={
             "client.py": (
@@ -136,7 +133,7 @@ EVAL_TASKS: List[EvalTask] = [
         trap_category="sqlite_busy_lock",
         description=(
             "Implement multi-threaded settlement processing in settlement.py "
-            "with WAL journal mode and busy timeout."
+            "so background worker threads can execute concurrent updates without database locking errors."
         ),
         initial_files={
             "settlement.py": (
@@ -178,7 +175,7 @@ EVAL_TASKS: List[EvalTask] = [
         trap_category="async_generator_syntax",
         description=(
             "Implement async event batch processor in batch_processor.py "
-            "iterating over an async generator stream."
+            "to collect event records from event_generator."
         ),
         initial_files={
             "batch_processor.py": (
@@ -209,7 +206,8 @@ EVAL_TASKS: List[EvalTask] = [
         domain="API_calls",
         trap_category="missing_rate_limit_retry",
         description=(
-            "Implement webhook dispatcher in dispatcher.py with 429 rate limit backoff retry."
+            "Implement webhook dispatcher in dispatcher.py "
+            "with resilient error handling and exponential backoff retry."
         ),
         initial_files={
             "dispatcher.py": (
@@ -243,7 +241,7 @@ EVAL_TASKS: List[EvalTask] = [
         domain="SQL",
         trap_category="clean_execution",
         description=(
-            "Initialize clean database pool manager without concurrency bugs."
+            "Initialize clean database pool manager in pool_manager.py."
         ),
         initial_files={
             "pool_manager.py": (
@@ -265,7 +263,8 @@ EVAL_TASKS: List[EvalTask] = [
         domain="SQL",
         trap_category="sqlite_busy_lock",
         description=(
-            "Configure thread-safe SQLite balance cache in cache.py with WAL mode and busy timeout."
+            "Implement thread-safe SQLite balance cache in cache.py "
+            "supporting simultaneous concurrent worker updates."
         ),
         initial_files={
             "cache.py": (
