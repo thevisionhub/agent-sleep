@@ -68,3 +68,27 @@ def test_hierarchy_sleep_closed_loop(tmp_path):
     structured = memory.recall_structured("Run bash script to deploy container")
     assert structured["cluster_insight"] is not None
     assert structured["cluster_insight"]["outcome_observations"] >= 1
+    assert "confidence" in structured["cluster_insight"]
+    assert "recommendation_strength" in structured["cluster_insight"]
+    assert structured["subsystem_status"]["hierarchy"] == "ok"
+
+
+def test_hierarchy_l2_statistics(temp_npz):
+    ch = ConceptHierarchy(save_path=temp_npz)
+
+    v1 = embed("git commit failed: nothing to commit")
+    v2 = embed("git push origin main rejected: non-fast-forward")
+
+    ch.add_memory(v1, outcome=0.0, example="git commit failure")
+    ch.add_memory(v2, outcome=0.0, example="git push failure")
+
+    # Verify L2 cluster tracks outcome stats
+    stats = ch.get_stats()
+    assert stats["l2_clusters"] >= 1
+
+    # Query L2
+    q = embed("git merge conflict in branch")
+    res_l2 = ch.query(q, level=2, min_similarity=0.30)
+    assert res_l2 is not None
+    assert res_l2["level"] == 2
+    assert res_l2["count"] >= 1

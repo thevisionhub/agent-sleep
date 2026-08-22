@@ -18,10 +18,11 @@ from agent_sleep.storage.db import (
     recall_causal_hypotheses,
     recall_memories,
     recall_rules,
+    record_memory_utility_feedback,
     save_episode,
 )
 from agent_sleep.self_model import SelfModel, infer_domain
-from agent_sleep.hierarchy import get_hierarchy
+from agent_sleep.hierarchy import HIERARCHY_RECALL_THRESHOLD, get_hierarchy
 from agent_sleep.storage.embeddings import embed
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,23 @@ class AgentMemory:
             scope=scope or self.scope,
         )
 
+    def record_memory_feedback(
+        self,
+        memory_ids: Sequence[int],
+        outcome: str,
+        was_applied: bool = True,
+    ) -> dict:
+        """
+        Record whether retrieved memories were applied and what happened afterward.
+        Closes the utility feedback loop so the memory system learns which knowledge helps.
+        """
+        return record_memory_utility_feedback(
+            memory_ids=memory_ids,
+            outcome=outcome,
+            was_applied=was_applied,
+            db_path=self.db_path,
+        )
+
     # ------------------------------------------------------------------
     # Recall (Selective, Scope-Aware & Closed-Loop)
     # ------------------------------------------------------------------
@@ -176,7 +194,7 @@ class AgentMemory:
             try:
                 hierarchy = get_hierarchy(db_path=self.db_path)
                 vec = embed(task)
-                cluster_info = hierarchy.query(vec, level=1, min_similarity=0.35)
+                cluster_info = hierarchy.query(vec, level=1, min_similarity=HIERARCHY_RECALL_THRESHOLD)
             except Exception:
                 cluster_info = None
 
@@ -200,7 +218,7 @@ class AgentMemory:
                     "lesson": "⚠ [LESSON]",
                     "compressed_episodic": "📦 [SUMMARY]",
                 }.get(m.get("memory_type", ""), "·")
-                ver_badge = f"({status})" if status == "verified" else ""
+                ver_badge = f"({status})" if status in ("verified", "repeated") else ""
                 lines.append(f"  {tag} {m['fact']} {ver_badge}: {m['value']}")
 
         # 3. Causal Hypotheses
@@ -220,7 +238,8 @@ class AgentMemory:
             mo = cluster_info["mean_outcome"]
             obs = cluster_info["outcome_observations"]
             ex = cluster_info.get("example") or "Similar task pattern"
-            lines.append(f"📊 [CLUSTER TRACK RECORD] '{ex}': historical success rate {mo:.0%} across {obs} prior attempts.")
+            rec_str = cluster_info.get("recommendation_strength", "MODERATE")
+            lines.append(f"📊 [CLUSTER TRACK RECORD ({rec_str})] '{ex}': historical success rate {mo:.0%} across {obs} prior attempts.")
 
         lines.append("[END MEMORY CONTEXT]")
         return "\n".join(lines)
@@ -236,20 +255,56 @@ class AgentMemory:
         """Return structured dictionary for custom prompt formatting and programmatic agent control."""
         domain = infer_domain(task)
         active_scopes = list(scopes) if scopes else list({self.scope, domain, "global"})
-        memories = recall_memories(task, top_k=top_k, scopes=active_scopes, db_path=self.db_path)
-        rules = recall_rules(task, top_k=top_k_rules, scopes=active_scopes, db_path=self.db_path)
-        causal = recall_causal_hypotheses(task, top_k=3, scopes=active_scopes, db_path=self.db_path)
+        
+        subsystem_status: dict = {
+            "memories": "ok",
+            "rules": "ok",
+            "causal": "ok",
+            "self_model": "ok",
+            "hierarchy": "ok",
+        }
 
-        self_model = SelfModel(db_path=self.db_path)
-        policy = self_model.get_behavioral_policy(domain, db_path=self.db_path)
+        try:
+            memories = recall_memories(task, top_k=top_k, scopes=active_scopes, db_path=self.db_path)
+            if not memories:
+                subsystem_status["memories"] = "empty"
+        except Exception as e:
+            memories = []
+            subsystem_status["memories"] = f"failed: {e}"
+
+        try:
+            rules = recall_rules(task, top_k=top_k_rules, scopes=active_scopes, db_path=self.db_path)
+            if not rules:
+                subsystem_status["rules"] = "empty"
+        except Exception as e:
+            rules = []
+            subsystem_status["rules"] = f"failed: {e}"
+
+        try:
+            causal = recall_causal_hypotheses(task, top_k=3, scopes=active_scopes, db_path=self.db_path)
+            if not causal:
+                subsystem_status["causal"] = "empty"
+        except Exception as e:
+            causal = []
+            subsystem_status["causal"] = f"failed: {e}"
+
+        try:
+            self_model = SelfModel(db_path=self.db_path)
+            policy = self_model.get_behavioral_policy(domain, db_path=self.db_path)
+        except Exception as e:
+            policy = {"competence": 0.5, "uncertainty": 0.5, "level": "MODERATE", "directive": "Standard execution."}
+            subsystem_status["self_model"] = f"failed: {e}"
 
         cluster_info = None
         try:
             hierarchy = get_hierarchy(db_path=self.db_path)
             vec = embed(task)
-            cluster_info = hierarchy.query(vec, level=1, min_similarity=0.60)
-        except Exception:
+            cluster_info = hierarchy.query(vec, level=1, min_similarity=HIERARCHY_RECALL_THRESHOLD)
+            if cluster_info is None:
+                subsystem_status["hierarchy"] = "no_match"
+        except Exception as e:
             cluster_info = None
+            subsystem_status["hierarchy"] = f"failed: {e}"
 
         return {
             "memories": memories,
@@ -259,5 +314,6 @@ class AgentMemory:
             "self_competence": policy["competence"],
             "operational_policy": policy,
             "cluster_insight": cluster_info,
+            "subsystem_status": subsystem_status,
             "scopes": active_scopes,
         }

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -99,6 +100,12 @@ _DDL = [
         confidence           REAL    DEFAULT 0.8,
         utility_score        REAL    DEFAULT 0.5,
         verification_status  TEXT    DEFAULT 'observed',
+        evidence_count       INTEGER DEFAULT 1,
+        contradiction_count  INTEGER DEFAULT 0,
+        times_retrieved      INTEGER DEFAULT 0,
+        times_applied        INTEGER DEFAULT 0,
+        success_count        INTEGER DEFAULT 0,
+        failure_count        INTEGER DEFAULT 0,
         embedding            BLOB    DEFAULT NULL,
         provenance           TEXT    DEFAULT '{}',
         source               TEXT    DEFAULT '',
@@ -116,7 +123,7 @@ _DDL = [
         action              TEXT NOT NULL,
         hypothesis          TEXT NOT NULL,
         effect              TEXT NOT NULL,
-        confidence          REAL DEFAULT 0.5,
+        confidence          REAL DEFAULT 0.35,
         support_count       INTEGER DEFAULT 1,
         contradiction_count INTEGER DEFAULT 0,
         embedding           BLOB DEFAULT NULL,
@@ -144,15 +151,18 @@ _DDL = [
     """,
     """
     CREATE TABLE IF NOT EXISTS candidate_rules (
-        id             INTEGER PRIMARY KEY AUTOINCREMENT,
-        scope          TEXT NOT NULL DEFAULT 'global',
-        belief         TEXT NOT NULL,
-        status         TEXT DEFAULT 'CANDIDATE',
-        confidence     REAL DEFAULT 0.5,
-        confirmations  INTEGER DEFAULT 0,
-        refutations    INTEGER DEFAULT 0,
-        embedding      BLOB DEFAULT NULL,
-        timestamp      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        scope               TEXT NOT NULL DEFAULT 'global',
+        belief              TEXT NOT NULL,
+        status              TEXT DEFAULT 'CANDIDATE',
+        confidence          REAL DEFAULT 0.5,
+        confirmations       INTEGER DEFAULT 0,
+        refutations         INTEGER DEFAULT 0,
+        evidence_count      INTEGER DEFAULT 1,
+        contradiction_count INTEGER DEFAULT 0,
+        times_applied       INTEGER DEFAULT 0,
+        embedding           BLOB DEFAULT NULL,
+        timestamp           TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(scope, belief)
     )
     """,
@@ -162,6 +172,9 @@ _DDL = [
         competence          REAL DEFAULT 0.5,
         uncertainty         REAL DEFAULT 0.5,
         historical_accuracy REAL DEFAULT 0.5,
+        success_count       INTEGER DEFAULT 1,
+        failure_count       INTEGER DEFAULT 1,
+        total_episodes      INTEGER DEFAULT 0,
         last_updated        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
@@ -188,14 +201,26 @@ def ensure_db_initialized(db_path: Optional[Path] = None) -> None:
                 ("semantic_memories", "confidence", "REAL DEFAULT 0.8"),
                 ("semantic_memories", "utility_score", "REAL DEFAULT 0.5"),
                 ("semantic_memories", "verification_status", "TEXT DEFAULT 'observed'"),
+                ("semantic_memories", "evidence_count", "INTEGER DEFAULT 1"),
+                ("semantic_memories", "contradiction_count", "INTEGER DEFAULT 0"),
+                ("semantic_memories", "times_retrieved", "INTEGER DEFAULT 0"),
+                ("semantic_memories", "times_applied", "INTEGER DEFAULT 0"),
+                ("semantic_memories", "success_count", "INTEGER DEFAULT 0"),
+                ("semantic_memories", "failure_count", "INTEGER DEFAULT 0"),
                 ("semantic_memories", "embedding", "BLOB DEFAULT NULL"),
                 ("semantic_memories", "provenance", "TEXT DEFAULT '{}'"),
                 ("semantic_memories", "last_accessed", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                 ("candidate_rules", "scope", "TEXT NOT NULL DEFAULT 'global'"),
+                ("candidate_rules", "evidence_count", "INTEGER DEFAULT 1"),
+                ("candidate_rules", "contradiction_count", "INTEGER DEFAULT 0"),
+                ("candidate_rules", "times_applied", "INTEGER DEFAULT 0"),
                 ("candidate_rules", "embedding", "BLOB DEFAULT NULL"),
                 ("causal_hypotheses", "scope", "TEXT NOT NULL DEFAULT 'global'"),
                 ("causal_hypotheses", "embedding", "BLOB DEFAULT NULL"),
                 ("skills", "scope", "TEXT NOT NULL DEFAULT 'global'"),
+                ("self_competence", "success_count", "INTEGER DEFAULT 1"),
+                ("self_competence", "failure_count", "INTEGER DEFAULT 1"),
+                ("self_competence", "total_episodes", "INTEGER DEFAULT 0"),
             ]
             for tbl, col, col_def in _migrations:
                 try:
@@ -376,14 +401,20 @@ def save_semantic_memory(
         cur.execute(
             """
             INSERT INTO semantic_memories 
-            (scope, memory_type, fact, value, importance, confidence, utility_score, verification_status, embedding, provenance, source)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            (scope, memory_type, fact, value, importance, confidence, utility_score, verification_status,
+             evidence_count, embedding, provenance, source)
+            VALUES (?,?,?,?,?,?,?,?,1,?,?,?)
             ON CONFLICT(scope, memory_type, fact) DO UPDATE SET
                 value=excluded.value,
                 importance=MAX(importance, excluded.importance),
-                confidence=MAX(confidence, excluded.confidence),
+                confidence=MIN(0.99, confidence + 0.05),
                 utility_score=MAX(utility_score, excluded.utility_score),
-                verification_status=excluded.verification_status,
+                evidence_count=evidence_count + 1,
+                verification_status=CASE 
+                    WHEN verification_status = 'observed' AND evidence_count >= 1 THEN 'repeated'
+                    WHEN excluded.verification_status = 'verified' THEN 'verified'
+                    ELSE verification_status 
+                END,
                 embedding=COALESCE(excluded.embedding, embedding),
                 provenance=excluded.provenance,
                 access_count=access_count+1,
@@ -405,15 +436,15 @@ def recall_memories(
     db_path: Optional[Path] = None,
 ) -> List[dict]:
     """
-    Retrieve semantic memories using pre-computed vector BLOBs.
-    Fast O(1) query embedding + stored dot product. Updates access counts.
+    Retrieve active semantic memories using pre-computed vector BLOBs.
+    Excludes quarantined and expired memories. Tracks access and retrieval counts.
     """
     try:
         q_vec = embed(query_text)
     except Exception:
         return _recall_keyword(query_text, top_k=top_k, scopes=scopes, memory_types=memory_types, db_path=db_path)
 
-    where_clauses = []
+    where_clauses = ["verification_status NOT IN ('quarantined', 'expired')"]
     params: list = []
 
     if scopes:
@@ -426,7 +457,7 @@ def recall_memories(
         where_clauses.append(f"memory_type IN ({placeholders})")
         params.extend(memory_types)
 
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_sql = f"WHERE {' AND '.join(where_clauses)}"
 
     with _cursor(db_path=db_path) as cur:
         cur.execute(f"SELECT * FROM semantic_memories {where_sql}", params)
@@ -447,17 +478,94 @@ def recall_memories(
             scored.append((score, row_copy))
             recalled_ids.append(row["id"])
 
-    # Update access counts and last_accessed timestamp
+    # Update access counts, retrieval counts, and last_accessed timestamp
     if recalled_ids:
         with _cursor(commit=True, db_path=db_path) as cur:
             placeholders = ",".join("?" * len(recalled_ids))
             cur.execute(
-                f"UPDATE semantic_memories SET access_count=access_count+1, last_accessed=CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                f"""
+                UPDATE semantic_memories 
+                SET access_count=access_count+1, 
+                    times_retrieved=times_retrieved+1, 
+                    last_accessed=CURRENT_TIMESTAMP 
+                WHERE id IN ({placeholders})
+                """,
                 tuple(recalled_ids),
             )
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored[:top_k]]
+
+
+def record_memory_utility_feedback(
+    memory_ids: Sequence[int],
+    outcome: str,
+    was_applied: bool = True,
+    db_path: Optional[Path] = None,
+) -> dict:
+    """
+    Record whether retrieved memories were applied and what happened afterward.
+    
+    If applied and outcome was successful:
+      - Increases utility_score (+0.10)
+      - Increments success_count
+      - Promotes observed -> repeated / verified on consistent success
+    
+    If applied and outcome failed:
+      - Decreases utility_score (-0.15)
+      - Increments failure_count
+      - If utility drops below 0.20 and failures exceed successes: quarantines memory
+    """
+    if not memory_ids:
+        return {"updated": 0, "quarantined": 0}
+
+    is_success = "success" in outcome.lower()
+    quarantined = 0
+    updated = 0
+
+    with _cursor(commit=True, db_path=db_path) as cur:
+        for mid in memory_ids:
+            cur.execute("SELECT id, utility_score, success_count, failure_count, verification_status FROM semantic_memories WHERE id=?", (mid,))
+            row = cur.fetchone()
+            if not row:
+                continue
+
+            u = float(row["utility_score"] or 0.5)
+            s_cnt = int(row["success_count"] or 0)
+            f_cnt = int(row["failure_count"] or 0)
+            status = row["verification_status"] or "observed"
+
+            if was_applied:
+                if is_success:
+                    u = min(1.0, u + 0.10)
+                    s_cnt += 1
+                    if status == "observed" and s_cnt >= 2:
+                        status = "repeated"
+                    elif s_cnt >= 5:
+                        status = "verified"
+                else:
+                    u = max(0.0, u - 0.15)
+                    f_cnt += 1
+                    if f_cnt >= 2 and f_cnt > s_cnt and u <= 0.25:
+                        status = "quarantined"
+                        quarantined += 1
+
+                cur.execute(
+                    """
+                    UPDATE semantic_memories
+                    SET times_applied = times_applied + 1,
+                        utility_score = ?,
+                        success_count = ?,
+                        failure_count = ?,
+                        verification_status = ?,
+                        last_accessed = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (u, s_cnt, f_cnt, status, mid),
+                )
+                updated += 1
+
+    return {"updated": updated, "quarantined": quarantined}
 
 
 def decay_stale_memories(
@@ -628,15 +736,20 @@ def save_causal_hypothesis(
     action: str,
     hypothesis: str,
     effect: str,
-    confidence: float = 0.8,
+    confidence: float = 0.35,
     scope: str = "global",
     db_path: Optional[Path] = None,
 ) -> None:
+    """
+    Save or update a causal hypothesis with evidence accumulation.
+    Initial observation starts with cautious confidence (0.35).
+    Subsequent observations increment support_count and confidence gradually.
+    """
     vec = embed(f"{action} {hypothesis} {effect}")
     vec_blob = serialize_vector(vec)
 
     with _cursor(commit=True, db_path=db_path) as cur:
-        # Check if identical hypothesis exists to increment support count
+        # Check if identical hypothesis exists in this scope to increment support count
         cur.execute(
             """
             SELECT id, support_count, confidence FROM causal_hypotheses
@@ -646,23 +759,25 @@ def save_causal_hypothesis(
         )
         row = cur.fetchone()
         if row:
+            new_support = int(row["support_count"] or 1) + 1
+            new_conf = min(0.95, 0.35 + 0.15 * (new_support - 1))
             cur.execute(
                 """
                 UPDATE causal_hypotheses
-                SET support_count = support_count + 1,
-                    confidence = MIN(0.99, confidence + 0.05),
+                SET support_count = ?,
+                    confidence = ?,
                     embedding = COALESCE(?, embedding),
                     timestamp = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (vec_blob, row["id"]),
+                (new_support, new_conf, vec_blob, row["id"]),
             )
         else:
             cur.execute(
                 """
                 INSERT INTO causal_hypotheses
-                (session_id, scope, action, hypothesis, effect, confidence, embedding)
-                VALUES (?,?,?,?,?,?,?)
+                (session_id, scope, action, hypothesis, effect, confidence, support_count, embedding)
+                VALUES (?,?,?,?,?,?,1,?)
                 """,
                 (session_id, scope, action[:200], hypothesis, effect, confidence, vec_blob),
             )
@@ -673,7 +788,7 @@ def recall_causal_hypotheses(
     *,
     top_k: int = 3,
     scopes: Optional[Sequence[str]] = ("global",),
-    min_confidence: float = 0.4,
+    min_confidence: float = 0.30,
     db_path: Optional[Path] = None,
 ) -> List[dict]:
     """
@@ -697,7 +812,7 @@ def recall_causal_hypotheses(
 
     with _cursor(db_path=db_path) as cur:
         cur.execute(
-            f"SELECT id, action, hypothesis, effect, confidence, support_count, embedding FROM causal_hypotheses {where_sql}",
+            f"SELECT id, action, hypothesis, effect, confidence, support_count, contradiction_count, embedding FROM causal_hypotheses {where_sql}",
             params,
         )
         rows = [dict(r) for r in cur.fetchall()]
@@ -731,18 +846,59 @@ def recall_causal_hypotheses(
     return [item for _, item in scored[:top_k]]
 
 
-def update_competence(domain: str, accuracy: float, db_path: Optional[Path] = None) -> None:
+def update_competence(
+    domain: str,
+    competence: float,
+    historical_accuracy: Optional[float] = None,
+    success: Optional[bool] = None,
+    db_path: Optional[Path] = None,
+) -> None:
+    """
+    Persist domain competence computed by SelfModel.
+    Stores the exact smoothed competence without double-smoothing in SQL.
+    Computes Bayesian Beta uncertainty based on observation counts.
+    """
+    acc = historical_accuracy if historical_accuracy is not None else competence
+    s_inc = 1 if success is True else 0
+    f_inc = 1 if success is False else 0
+
     with _cursor(commit=True, db_path=db_path) as cur:
+        cur.execute("SELECT success_count, failure_count, total_episodes FROM self_competence WHERE domain=?", (domain,))
+        row = cur.fetchone()
+        if row:
+            s_cnt = int(row["success_count"] or 1) + s_inc
+            f_cnt = int(row["failure_count"] or 1) + f_inc
+            tot = int(row["total_episodes"] or 0) + 1
+        else:
+            s_cnt = 1 + s_inc
+            f_cnt = 1 + f_inc
+            tot = 1
+
+        # Bayesian Beta distribution standard deviation as uncertainty metric:
+        # Var(Beta) = (alpha * beta) / ((alpha + beta)^2 * (alpha + beta + 1))
+        alpha = float(s_cnt)
+        beta = float(f_cnt)
+        total_obs = alpha + beta
+        var = (alpha * beta) / ((total_obs ** 2) * (total_obs + 1.0))
+        std = math.sqrt(var)
+        # Normalized uncertainty: drops as total observations increase
+        uncertainty = round(min(1.0, std * 4.0), 3)
+
         cur.execute(
             """
-            INSERT INTO self_competence (domain, competence, historical_accuracy)
-            VALUES (?,?,?)
+            INSERT INTO self_competence 
+                (domain, competence, uncertainty, historical_accuracy, success_count, failure_count, total_episodes, last_updated)
+            VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
             ON CONFLICT(domain) DO UPDATE SET
-                competence=(competence*0.8 + ?*0.2),
-                historical_accuracy=(historical_accuracy*0.8 + ?*0.2),
+                competence=excluded.competence,
+                uncertainty=excluded.uncertainty,
+                historical_accuracy=excluded.historical_accuracy,
+                success_count=excluded.success_count,
+                failure_count=excluded.failure_count,
+                total_episodes=excluded.total_episodes,
                 last_updated=CURRENT_TIMESTAMP
             """,
-            (domain, accuracy, accuracy, accuracy, accuracy),
+            (domain, competence, uncertainty, acc, s_cnt, f_cnt, tot),
         )
 
 
@@ -750,7 +906,7 @@ def get_domain_competence(domain: str, db_path: Optional[Path] = None) -> dict:
     """Retrieve tracked competence metrics for a specific domain."""
     with _cursor(db_path=db_path) as cur:
         cur.execute(
-            "SELECT domain, competence, uncertainty, historical_accuracy, last_updated FROM self_competence WHERE domain=?",
+            "SELECT domain, competence, uncertainty, historical_accuracy, success_count, failure_count, total_episodes, last_updated FROM self_competence WHERE domain=?",
             (domain,),
         )
         row = cur.fetchone()
@@ -761,6 +917,9 @@ def get_domain_competence(domain: str, db_path: Optional[Path] = None) -> dict:
             "competence": 0.5,
             "uncertainty": 0.5,
             "historical_accuracy": 0.5,
+            "success_count": 1,
+            "failure_count": 1,
+            "total_episodes": 0,
             "last_updated": None,
         }
 

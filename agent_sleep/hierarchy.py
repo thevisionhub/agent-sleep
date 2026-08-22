@@ -1,5 +1,5 @@
 """
-ConceptHierarchy: online, no-backprop abstraction clustering.
+ConceptHierarchy: online, no-backprop abstraction clustering (v0.1.1).
 
 Two-level in-memory cluster hierarchy maintained by streaming agent experiences:
 - L1 (concrete): "Bash error: directory not found" clusters
@@ -9,23 +9,19 @@ No training, no labels, no hyperparameter search. Just Welford online means
 and cosine similarity thresholds, directly on the embedding of whatever the
 agent just did.
 
-This closes the loop that most agent memory systems miss: not just "remember X
-happened" but "in situations LIKE THIS, how has the agent historically done?"
-That is what ConceptHierarchy.query() returns: the mean outcome of all past
-situations whose embedding was similar to this one.
+Integrated into the offline sleep consolidation engine (Stage 6.5) and queried
+during online selective recall to provide empirical track records ("in situations
+LIKE THIS, how has the agent historically done?").
 
-Persistence: saves/loads to a .pt file so clusters survive restarts.
-
-Note: This module is intentionally not wired into the consolidation pipeline
-in v0.1.1-alpha. It will be integrated in a future release to provide
-experience-based competence prediction.
+Persistence: saves/loads to a .npz file (without unsafe pickle deserialization)
+so clusters survive process restarts.
 """
 from __future__ import annotations
 
 import logging
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 
@@ -33,11 +29,14 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SAVE_PATH = Path(__file__).parent / "data" / "concept_hierarchy.npz"
 
-# Similarity thresholds for cluster merge decisions:
+# Default similarity thresholds for cluster merge decisions:
 # L1: tight (0.85) — only very similar situations merge
 # L2: looser (0.70) — broader concept grouping
 THRESHOLD_L1 = 0.85
 THRESHOLD_L2 = 0.70
+
+# Default retrieval threshold for online recall
+HIERARCHY_RECALL_THRESHOLD = 0.35
 
 
 class ConceptHierarchy:
@@ -61,23 +60,26 @@ class ConceptHierarchy:
         latent_dim: int = 384,
         threshold_l1: float = THRESHOLD_L1,
         threshold_l2: float = THRESHOLD_L2,
-        save_path: Optional[str] = None,
+        save_path: Optional[Union[str, Path]] = None,
     ) -> None:
         self.latent_dim = latent_dim
         self.threshold_l1 = threshold_l1
         self.threshold_l2 = threshold_l2
         self.save_path = Path(save_path) if save_path else _DEFAULT_SAVE_PATH
 
-        # L1 state
+        # L1 state (concrete clusters)
         self._l1_centroids: list = []     # list of np.ndarray (normalized)
         self._l1_counts: list = []        # int
         self._l1_outcome_sum: list = []   # float
         self._l1_outcome_n: list = []     # int
         self._l1_examples: list = []      # str
 
-        # L2 state
+        # L2 state (abstract mega-clusters with track record statistics)
         self._l2_centroids: list = []
         self._l2_counts: list = []
+        self._l2_outcome_sum: list = []   # float
+        self._l2_outcome_n: list = []     # int
+        self._l2_examples: list = []      # str
 
     # ------------------------------------------------------------------
     # Core algorithm
@@ -95,12 +97,11 @@ class ConceptHierarchy:
         Parameters
         ----------
         embedding : np.ndarray
-            The latent embedding for this experience (e.g., from the agent's
-            goal/action/state text).
+            The latent embedding for this experience.
         outcome : float, optional
-            The real outcome signal (0=bad, 1=good). None if unknown.
+            The real outcome signal (0.0=failure, 1.0=success). None if unknown.
         example : str
-            A short human-readable label (the action taken, the goal, etc.)
+            A short human-readable label (e.g. goal or action taken).
         """
         z = self._normalize(np.asarray(embedding, dtype=np.float32))
 
@@ -112,7 +113,7 @@ class ConceptHierarchy:
             self._l1_counts.append(1)
             self._l1_outcome_sum.append(outcome if outcome is not None else 0.0)
             self._l1_outcome_n.append(1 if outcome is not None else 0)
-            self._l1_examples.append(example)
+            self._l1_examples.append(example[:256])
             l1_idx = len(self._l1_centroids) - 1
         else:
             # Merge into existing L1 cluster (Welford online mean)
@@ -125,7 +126,7 @@ class ConceptHierarchy:
                 self._l1_outcome_sum[l1_idx] += outcome
                 self._l1_outcome_n[l1_idx] += 1
             if example:
-                self._l1_examples[l1_idx] = example  # keep most recent label
+                self._l1_examples[l1_idx] = example[:256]
 
         # ── L2 update using the updated L1 centroid ────────────────────
         l1_centroid = self._l1_centroids[l1_idx]
@@ -133,19 +134,29 @@ class ConceptHierarchy:
         if l2_idx is None:
             self._l2_centroids.append(l1_centroid.copy())
             self._l2_counts.append(1)
+            self._l2_outcome_sum.append(outcome if outcome is not None else 0.0)
+            self._l2_outcome_n.append(1 if outcome is not None else 0)
+            self._l2_examples.append(example[:256])
         else:
             n = self._l2_counts[l2_idx]
             old_c = self._l2_centroids[l2_idx]
             new_c = (old_c * n + l1_centroid) / (n + 1)
             self._l2_centroids[l2_idx] = self._normalize(new_c)
             self._l2_counts[l2_idx] = n + 1
+            if outcome is not None:
+                self._l2_outcome_sum[l2_idx] += outcome
+                self._l2_outcome_n[l2_idx] += 1
+            if example:
+                self._l2_examples[l2_idx] = example[:256]
 
-    def query(self, embedding: np.ndarray, level: int = 1, min_similarity: Optional[float] = None) -> Optional[dict]:
+    def query(
+        self,
+        embedding: np.ndarray,
+        level: int = 1,
+        min_similarity: Optional[float] = None,
+    ) -> Optional[dict]:
         """
-        Find the nearest cluster to this embedding and return what it knows.
-
-        This is the generalization primitive: new situation → "situations like
-        this have historically gone well/poorly".
+        Find the nearest cluster to this embedding and return empirical track record.
 
         Parameters
         ----------
@@ -153,35 +164,55 @@ class ConceptHierarchy:
         level : int
             1 = L1 (concrete clusters), 2 = L2 (abstract clusters).
         min_similarity : float, optional
-            Override matching threshold (defaults to threshold_l1 or threshold_l2).
+            Override matching threshold (defaults to HIERARCHY_RECALL_THRESHOLD).
 
         Returns
         -------
         dict or None
-            None if no cluster is within the similarity threshold.
-            For L1: {"level", "similarity", "count", "mean_outcome",
-                      "outcome_observations", "example"}
-            For L2: {"level", "similarity", "count"}
+            None if no cluster meets threshold.
+            Returns cluster details with confidence and recommendation strength.
         """
         z = self._normalize(np.asarray(embedding, dtype=np.float32))
         centroids = self._l1_centroids if level == 1 else self._l2_centroids
-        threshold = min_similarity if min_similarity is not None else (self.threshold_l1 if level == 1 else self.threshold_l2)
+        counts = self._l1_counts if level == 1 else self._l2_counts
+        outcome_sum = self._l1_outcome_sum if level == 1 else self._l2_outcome_sum
+        outcome_n = self._l1_outcome_n if level == 1 else self._l2_outcome_n
+        examples = self._l1_examples if level == 1 else self._l2_examples
+
+        threshold = min_similarity if min_similarity is not None else HIERARCHY_RECALL_THRESHOLD
 
         idx = self._best_match(z, centroids, threshold)
         if idx is None:
             return None
 
-        result: dict = {
+        sim = self._cosine(z, centroids[idx])
+        count = counts[idx]
+        n_obs = outcome_n[idx] if idx < len(outcome_n) else 0
+        mean_outcome = round(outcome_sum[idx] / n_obs, 3) if n_obs > 0 else None
+        example = examples[idx] if idx < len(examples) else ""
+
+        # Qualification and confidence metric:
+        # Scales with cosine similarity and sample size (diminishing return above 5 samples)
+        sample_weight = 1.0 - (1.0 / (n_obs + 1.0)) if n_obs > 0 else 0.3
+        confidence = round(float(sim * sample_weight), 3)
+
+        if n_obs >= 3 and sim >= 0.50:
+            rec_strength = "HIGH"
+        elif n_obs >= 1 and sim >= threshold:
+            rec_strength = "MODERATE"
+        else:
+            rec_strength = "LOW"
+
+        return {
             "level": level,
-            "similarity": round(self._cosine(z, centroids[idx]), 3),
-            "count": (self._l1_counts if level == 1 else self._l2_counts)[idx],
+            "similarity": round(sim, 3),
+            "count": count,
+            "mean_outcome": mean_outcome,
+            "outcome_observations": n_obs,
+            "example": example,
+            "confidence": confidence,
+            "recommendation_strength": rec_strength,
         }
-        if level == 1:
-            n = self._l1_outcome_n[idx]
-            result["mean_outcome"] = round(self._l1_outcome_sum[idx] / n, 3) if n > 0 else None
-            result["outcome_observations"] = n
-            result["example"] = self._l1_examples[idx]
-        return result
 
     def get_stats(self) -> dict:
         """Return cluster counts for monitoring."""
@@ -189,10 +220,11 @@ class ConceptHierarchy:
             "l1_clusters": len(self._l1_centroids),
             "l2_clusters": len(self._l2_centroids),
             "l1_total_memories": sum(self._l1_counts),
+            "l2_total_memories": sum(self._l2_counts),
         }
 
     # ------------------------------------------------------------------
-    # Persistence
+    # Persistence (allow_pickle=False safe)
     # ------------------------------------------------------------------
 
     def save(self, path: Optional[Union[str, Path]] = None) -> None:
@@ -200,25 +232,27 @@ class ConceptHierarchy:
         target = Path(path) if path else self.save_path
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
-            # Truncate examples to 256 chars so they fit in dtype='U256'
-            # (avoids dtype=object which requires allow_pickle=True)
-            examples_safe = [str(e)[:256] for e in self._l1_examples]
+            l1_ex_safe = [str(e)[:256] for e in self._l1_examples]
+            l2_ex_safe = [str(e)[:256] for e in self._l2_examples]
             np.savez_compressed(
                 str(target),
                 l1_centroids=np.array(self._l1_centroids) if self._l1_centroids else np.empty((0, self.latent_dim)),
                 l1_counts=np.array(self._l1_counts, dtype=np.int32),
                 l1_outcome_sum=np.array(self._l1_outcome_sum, dtype=np.float32),
                 l1_outcome_n=np.array(self._l1_outcome_n, dtype=np.int32),
-                l1_examples=np.array(examples_safe, dtype="U256"),
+                l1_examples=np.array(l1_ex_safe, dtype="U256"),
                 l2_centroids=np.array(self._l2_centroids) if self._l2_centroids else np.empty((0, self.latent_dim)),
                 l2_counts=np.array(self._l2_counts, dtype=np.int32),
+                l2_outcome_sum=np.array(self._l2_outcome_sum, dtype=np.float32),
+                l2_outcome_n=np.array(self._l2_outcome_n, dtype=np.int32),
+                l2_examples=np.array(l2_ex_safe, dtype="U256"),
             )
             logger.debug(f"ConceptHierarchy saved to {target}")
         except Exception as e:
             logger.warning(f"ConceptHierarchy save failed: {e}")
 
     def load(self, path: Optional[Union[str, Path]] = None) -> None:
-        """Load cluster state from disk. No-op if file doesn't exist."""
+        """Load cluster state from disk safely without pickle."""
         target = Path(path) if path else self.save_path
         if not target.exists():
             return
@@ -231,14 +265,15 @@ class ConceptHierarchy:
             self._l1_examples = [str(e) for e in data["l1_examples"]]
             self._l2_centroids = list(data["l2_centroids"])
             self._l2_counts = list(data["l2_counts"].astype(int))
+            if "l2_outcome_sum" in data:
+                self._l2_outcome_sum = list(data["l2_outcome_sum"].astype(float))
+                self._l2_outcome_n = list(data["l2_outcome_n"].astype(int))
+                self._l2_examples = [str(e) for e in data["l2_examples"]]
             logger.debug(f"ConceptHierarchy loaded: {len(self._l1_centroids)} L1, {len(self._l2_centroids)} L2 clusters")
         except ValueError:
-            # Legacy file saved with dtype=object requires allow_pickle=True.
-            # Refuse to load it (security risk) and start fresh instead.
             logger.warning(
                 f"ConceptHierarchy at {target} appears to be a legacy pickle-format file "
-                "and cannot be loaded safely. Starting with an empty hierarchy. "
-                "Delete the file to suppress this warning."
+                "and cannot be loaded safely. Starting with an empty hierarchy."
             )
         except Exception as e:
             logger.warning(f"ConceptHierarchy load failed (starting fresh): {e}")

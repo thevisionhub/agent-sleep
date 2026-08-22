@@ -75,7 +75,13 @@ class SelfModel:
 
         try:
             from agent_sleep.storage.db import update_competence
-            update_competence(domain, new_value, db_path=target_db)
+            update_competence(
+                domain,
+                competence=new_value,
+                historical_accuracy=new_value,
+                success=success,
+                db_path=target_db,
+            )
         except Exception as e:
             logger.warning(f"Could not persist competence update: {e}")
 
@@ -96,42 +102,70 @@ class SelfModel:
         except Exception:
             return 0.5
 
+    def get_domain_metrics(self, domain: str, db_path: Optional[Path] = None) -> dict:
+        """Return full domain metrics including uncertainty and episode counts."""
+        target_db = db_path or self.db_path
+        try:
+            from agent_sleep.storage.db import get_domain_competence
+            return get_domain_competence(domain, db_path=target_db)
+        except Exception:
+            return {
+                "domain": domain,
+                "competence": self.get_competence(domain, db_path=target_db),
+                "uncertainty": 0.5,
+                "historical_accuracy": 0.5,
+                "success_count": 1,
+                "failure_count": 1,
+                "total_episodes": 0,
+            }
+
     def get_behavioral_policy(self, domain: str, db_path: Optional[Path] = None) -> dict:
         """
-        Derive an actionable operational policy based on self-competence.
-        Changes agent verification intensity, retry budget, and execution strategy.
+        Derive an actionable operational policy based on self-competence and Bayesian uncertainty.
+        Provides decision support for the host agent's verification intensity and retry budget.
         """
-        c = self.get_competence(domain, db_path=db_path)
-        if c >= 0.80:
-            return {
-                "domain": domain,
-                "competence": round(c, 2),
-                "level": "HIGH",
-                "verification_intensity": "LIGHTWEIGHT",
-                "retry_budget": 2,
-                "autonomy": "HIGH",
-                "directive": f"High historical competence in {domain} ({c:.0%}). Fast-path execution permitted.",
-            }
-        elif c >= 0.50:
-            return {
-                "domain": domain,
-                "competence": round(c, 2),
-                "level": "MODERATE",
-                "verification_intensity": "STANDARD",
-                "retry_budget": 3,
-                "autonomy": "BALANCED",
-                "directive": f"Moderate competence in {domain} ({c:.0%}). Standard error handling and testing required.",
-            }
+        metrics = self.get_domain_metrics(domain, db_path=db_path)
+        c = float(metrics.get("competence", 0.5))
+        unc = float(metrics.get("uncertainty", 0.5))
+        total_ep = int(metrics.get("total_episodes", 0))
+
+        # Derive policy based on competence score and uncertainty
+        if total_ep == 0:
+            level = "MODERATE"
+            directive = f"Novel domain '{domain}' with no prior history. Standard verification and test checks recommended."
+            ver_intensity = "STANDARD"
+            retry_budget = 3
+            autonomy = "BALANCED"
+        elif c >= 0.75 and unc <= 0.40:
+            level = "HIGH"
+            directive = f"High historical competence in {domain} ({c:.0%}). Fast-path execution permitted."
+            ver_intensity = "LIGHTWEIGHT"
+            retry_budget = 2
+            autonomy = "HIGH"
+        elif c < 0.50:
+            level = "LOW"
+            directive = f"Low historical competence in {domain} ({c:.0%}). Mandatory pre-execution validation, defensive error handling, and test verification before completion."
+            ver_intensity = "STRICT"
+            retry_budget = 5
+            autonomy = "CAUTIOUS"
         else:
-            return {
-                "domain": domain,
-                "competence": round(c, 2),
-                "level": "LOW",
-                "verification_intensity": "STRICT",
-                "retry_budget": 5,
-                "autonomy": "CAUTIOUS",
-                "directive": f"Low historical competence in {domain} ({c:.0%}). Mandatory pre-execution validation, defensive error handling, and test verification before completion.",
-            }
+            level = "MODERATE"
+            directive = f"Moderate competence in {domain} ({c:.0%}). Standard error handling and testing required."
+            ver_intensity = "STANDARD"
+            retry_budget = 3
+            autonomy = "BALANCED"
+
+        return {
+            "domain": domain,
+            "competence": round(c, 2),
+            "uncertainty": round(unc, 2),
+            "sample_size": total_ep,
+            "level": level,
+            "verification_intensity": ver_intensity,
+            "retry_budget": retry_budget,
+            "autonomy": autonomy,
+            "directive": directive,
+        }
 
     def get_summary(self) -> dict:
         """Return all tracked domains and their competence scores."""

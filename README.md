@@ -126,38 +126,36 @@ agent-sleep show --scope my_api --db /path/to/memory.db
 ## Key Features (v0.1.1-alpha)
 
 * **Pre-Computed Vector BLOBs**: Embeds the query once and compares it against pre-computed stored vectors, eliminating repeated text embedding during recall.
+* **Epistemic Memory Lifecycle**: Tracks memory progression through stages (`RAW` → `OBSERVED` → `REPEATED` → `VERIFIED` → `ACTIVE`), automatically quarantining contradictory or high-failure memories.
+* **Memory Utility Learning**: Evaluates whether retrieved memories actually helped future execution (`retrieval` → `application` → `outcome attribution`), dynamically adjusting utility scores.
+* **Causal Hypothesis Accumulation**: Distills recurring failures into causal mechanisms using cautious initial confidence (`0.35`) and evidence accumulation over repeated observations.
+* **Bayesian Self-Competence Model**: Estimates domain competence and Bayesian Beta-distribution uncertainty to provide adaptive decision support (verification intensity, retry budgets) for host agents.
+* **Online Concept Hierarchy**: Maintains two-level Welford online abstraction clusters (`.npz`) to provide empirical track records ("in situations like this, what has been our historical success rate?").
 * **Selective Rule Retrieval**: Injects only high-confidence rules semantically relevant to the current task — zero prompt clutter.
 * **Scope & Project Isolation**: Multi-tier namespaces (`scope="repo_a"`, `scope="global"`). Prevents cross-project rule bleed.
-* **Epistemic Tracking**: Distinguishes `[OBSERVED]` step lessons from `[VERIFIED]` test-runner verdicts with provenance metadata.
-* **Memory Decay & Forgetting**: Automatically decays utility for stale, unverified memories that receive zero recall activity over time.
 * **Zero Mandatory Heavy Dependencies**: Works out-of-the-box using standard SQLite and a deterministic hashed bag-of-words fallback. Seamlessly upgrades to `sentence-transformers` (`all-MiniLM-L6-v2`) when installed.
 
 ---
 
-## Benchmark: Transfer Eval
+## Benchmarks & Evaluation
 
-We evaluate `agent-sleep` on a reproducible 12-task sequential software suite containing recurring architectural traps (async syntax errors, SQLite busy locks, missing rate-limit headers, SQL injection vulnerabilities):
-
-```bash
-python benchmarks/run.py
-```
-
-### Measured Results:
+### 1. Controlled Transfer Eval (`benchmarks/run.py`)
+Evaluates memory consolidation, vector retrieval, and knowledge transfer across sequential software tasks with recurring architectural traps:
 
 | Metric | Memory OFF | Memory ON | Improvement |
 |:---|:---:|:---:|:---:|
 | **Pass Rate (Pass@12)** | 67% | **92%** | **+25 percentage points** |
 | **Avg LLM Calls / Task** | 14.7 | **8.5** | **-42% (fewer calls)** |
 | **Repeated Mistakes** | 8 | **2** | **-75% (fewer mistakes)** |
-| **Repeated Mistake Rate** | 67% | **17%** | **-50 percentage points** |
+
+### 2. Autonomous Agent Sandbox Benchmark (`benchmarks/agent_eval/`)
+Evaluates live multi-threaded pytest execution in isolated sandboxes comparing **BASELINE**, **NAIVE_RAG**, and **AGENT_SLEEP**:
+```bash
+python benchmarks/agent_eval/runner.py
+```
 
 > [!NOTE]
-> **Benchmark note**: The included Transfer Eval suite is a deterministic simulation designed to validate the memory-consolidation, vector retrieval, and knowledge transfer pipeline across sequential tasks. It is not yet a benchmark of autonomous real-world LLM agent performance.
-
-> [!IMPORTANT]
-> **Embedding mode**: By default, `agent-sleep` uses a lightweight hashed bag-of-words fallback for recall. This handles same-domain keyword overlap well but will not catch cross-domain semantic transfer (e.g., "invoice locking" → "subscription threading") without the optional `sentence-transformers` model. Install `pip install "agent-sleep[semantic]"` to enable full semantic similarity recall. The benchmark and MCP integration tests use the semantic model.
-
-*Full evaluation harness and task definitions in `benchmarks/run.py`.*
+> **Scientific Framing**: The Transfer Eval and Sandbox benchmarks validate that `agent-sleep` successfully stores, retrieves, and operationalizes lessons to prevent recurring errors. It provides adaptive decision support for host agents. See [`benchmarks/agent_eval/reproducibility.md`](benchmarks/agent_eval/reproducibility.md) for full methodology and control parameters.
 
 ---
 

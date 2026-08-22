@@ -71,3 +71,29 @@ def test_competence_policy_prompt_injection(temp_db):
     assert structured["domain"] == "SQL"
     assert structured["operational_policy"]["level"] == "LOW"
     assert structured["operational_policy"]["verification_intensity"] == "STRICT"
+
+
+def test_self_model_single_ema_and_uncertainty(temp_db):
+    model = SelfModel(db_path=temp_db)
+    
+    # 1. First update: 0.5 * 0.8 + 1.0 * 0.2 = 0.60
+    new_c = model.update("Python", True, db_path=temp_db)
+    assert round(new_c, 3) == 0.60
+
+    # 2. Verify persisted value is EXACTLY 0.60 (no double smoothing in SQL)
+    metrics = get_domain_competence("Python", db_path=temp_db)
+    assert round(metrics["competence"], 3) == 0.60
+    assert metrics["success_count"] == 2  # prior 1 + 1 success
+    assert metrics["failure_count"] == 1  # prior 1
+
+    # 3. Reload in a new instance and verify exact persistence
+    model2 = SelfModel(db_path=temp_db)
+    assert round(model2.get_competence("Python"), 3) == 0.60
+
+    # 4. Uncertainty decreases as observations accumulate
+    u1 = metrics["uncertainty"]
+    for _ in range(20):
+        model.update("Python", True, db_path=temp_db)
+    metrics20 = get_domain_competence("Python", db_path=temp_db)
+    u20 = metrics20["uncertainty"]
+    assert u20 < u1, f"Expected uncertainty to decrease: {u20} vs {u1}"
