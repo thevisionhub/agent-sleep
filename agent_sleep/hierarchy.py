@@ -200,13 +200,16 @@ class ConceptHierarchy:
         target = Path(path) if path else self.save_path
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
+            # Truncate examples to 256 chars so they fit in dtype='U256'
+            # (avoids dtype=object which requires allow_pickle=True)
+            examples_safe = [str(e)[:256] for e in self._l1_examples]
             np.savez_compressed(
                 str(target),
                 l1_centroids=np.array(self._l1_centroids) if self._l1_centroids else np.empty((0, self.latent_dim)),
                 l1_counts=np.array(self._l1_counts, dtype=np.int32),
                 l1_outcome_sum=np.array(self._l1_outcome_sum, dtype=np.float32),
                 l1_outcome_n=np.array(self._l1_outcome_n, dtype=np.int32),
-                l1_examples=np.array(self._l1_examples, dtype=object),
+                l1_examples=np.array(examples_safe, dtype="U256"),
                 l2_centroids=np.array(self._l2_centroids) if self._l2_centroids else np.empty((0, self.latent_dim)),
                 l2_counts=np.array(self._l2_counts, dtype=np.int32),
             )
@@ -220,15 +223,23 @@ class ConceptHierarchy:
         if not target.exists():
             return
         try:
-            data = np.load(str(target), allow_pickle=True)
+            data = np.load(str(target), allow_pickle=False)
             self._l1_centroids = list(data["l1_centroids"])
             self._l1_counts = list(data["l1_counts"].astype(int))
             self._l1_outcome_sum = list(data["l1_outcome_sum"].astype(float))
             self._l1_outcome_n = list(data["l1_outcome_n"].astype(int))
-            self._l1_examples = list(data["l1_examples"])
+            self._l1_examples = [str(e) for e in data["l1_examples"]]
             self._l2_centroids = list(data["l2_centroids"])
             self._l2_counts = list(data["l2_counts"].astype(int))
             logger.debug(f"ConceptHierarchy loaded: {len(self._l1_centroids)} L1, {len(self._l2_centroids)} L2 clusters")
+        except ValueError:
+            # Legacy file saved with dtype=object requires allow_pickle=True.
+            # Refuse to load it (security risk) and start fresh instead.
+            logger.warning(
+                f"ConceptHierarchy at {target} appears to be a legacy pickle-format file "
+                "and cannot be loaded safely. Starting with an empty hierarchy. "
+                "Delete the file to suppress this warning."
+            )
         except Exception as e:
             logger.warning(f"ConceptHierarchy load failed (starting fresh): {e}")
 

@@ -121,7 +121,7 @@ class SleepConsolidator:
             logger.warning(f"Episodic compression failed (non-fatal): {e}")
 
         # ── Fetch episodes ─────────────────────────────────────────────
-        episodes_raw = get_unprocessed_episodes(session_id, db_path=self.db_path)
+        episodes_raw = get_unprocessed_episodes(session_id, scope=self.scope, db_path=self.db_path)
         if not episodes_raw:
             self._emit("DONE", "No unprocessed episodes. Nothing to consolidate.", 100)
             stats["duration_seconds"] = round(time.time() - start, 2)

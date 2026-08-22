@@ -146,13 +146,14 @@ _DDL = [
     CREATE TABLE IF NOT EXISTS candidate_rules (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,
         scope          TEXT NOT NULL DEFAULT 'global',
-        belief         TEXT NOT NULL UNIQUE,
+        belief         TEXT NOT NULL,
         status         TEXT DEFAULT 'CANDIDATE',
         confidence     REAL DEFAULT 0.5,
         confirmations  INTEGER DEFAULT 0,
         refutations    INTEGER DEFAULT 0,
         embedding      BLOB DEFAULT NULL,
-        timestamp      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        timestamp      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(scope, belief)
     )
     """,
     """
@@ -202,6 +203,44 @@ def ensure_db_initialized(db_path: Optional[Path] = None) -> None:
                 except sqlite3.OperationalError:
                     pass  # column already exists
 
+            # Migration: candidate_rules UNIQUE(belief) → UNIQUE(scope, belief)
+            # Detect whether the old global-unique index still exists by checking
+            # if inserting the same belief in two different scopes would fail.
+            try:
+                cur.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='candidate_rules'"
+                )
+                row = cur.fetchone()
+                if row and "belief TEXT NOT NULL UNIQUE" in (row["sql"] or ""):
+                    # Old schema detected — rebuild with correct composite unique
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS candidate_rules_new (
+                            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                            scope          TEXT NOT NULL DEFAULT 'global',
+                            belief         TEXT NOT NULL,
+                            status         TEXT DEFAULT 'CANDIDATE',
+                            confidence     REAL DEFAULT 0.5,
+                            confirmations  INTEGER DEFAULT 0,
+                            refutations    INTEGER DEFAULT 0,
+                            embedding      BLOB DEFAULT NULL,
+                            timestamp      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(scope, belief)
+                        )
+                    """)
+                    cur.execute("""
+                        INSERT OR IGNORE INTO candidate_rules_new
+                            (id, scope, belief, status, confidence, confirmations,
+                             refutations, embedding, timestamp)
+                        SELECT id, scope, belief, status, confidence, confirmations,
+                               refutations, embedding, timestamp
+                        FROM candidate_rules
+                    """)
+                    cur.execute("DROP TABLE candidate_rules")
+                    cur.execute("ALTER TABLE candidate_rules_new RENAME TO candidate_rules")
+                    logger.info("candidate_rules migrated to UNIQUE(scope, belief)")
+            except Exception as _mig_err:
+                logger.warning(f"candidate_rules migration failed (non-fatal): {_mig_err}")
+
             conn.commit()
             _INITIALIZED_PATHS.add(target_path)
         finally:
@@ -247,12 +286,27 @@ def save_episode(
         return cur.lastrowid
 
 
-def get_unprocessed_episodes(session_id: str, db_path: Optional[Path] = None) -> List[dict]:
+def get_unprocessed_episodes(session_id: str, scope: Optional[str] = None, db_path: Optional[Path] = None) -> List[dict]:
+    """Fetch unprocessed episodes for a session.
+
+    Parameters
+    ----------
+    session_id : str
+    scope : str, optional
+        When supplied, only episodes whose scope matches are returned.
+        Omit (or pass None) only in contexts where cross-scope access is intentional.
+    """
     with _cursor(db_path=db_path) as cur:
-        cur.execute(
-            "SELECT * FROM execution_episodes WHERE session_id=? AND processed_by_sleep=0 ORDER BY id",
-            (session_id,),
-        )
+        if scope is not None:
+            cur.execute(
+                "SELECT * FROM execution_episodes WHERE session_id=? AND scope=? AND processed_by_sleep=0 ORDER BY id",
+                (session_id, scope),
+            )
+        else:
+            cur.execute(
+                "SELECT * FROM execution_episodes WHERE session_id=? AND processed_by_sleep=0 ORDER BY id",
+                (session_id,),
+            )
         return [dict(r) for r in cur.fetchall()]
 
 
@@ -490,7 +544,7 @@ def add_candidate_rule(
             """
             INSERT INTO candidate_rules (scope, belief, confidence, embedding)
             VALUES (?,?,?,?)
-            ON CONFLICT(belief) DO UPDATE SET
+            ON CONFLICT(scope, belief) DO UPDATE SET
                 confirmations=confirmations+1,
                 confidence=MIN(0.99, confidence+0.05),
                 embedding=COALESCE(excluded.embedding, embedding),

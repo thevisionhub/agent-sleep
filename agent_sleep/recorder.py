@@ -176,7 +176,7 @@ class AgentMemory:
             try:
                 hierarchy = get_hierarchy(db_path=self.db_path)
                 vec = embed(task)
-                cluster_info = hierarchy.query(vec, level=1, min_similarity=0.60)
+                cluster_info = hierarchy.query(vec, level=1, min_similarity=0.35)
             except Exception:
                 cluster_info = None
 

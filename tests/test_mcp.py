@@ -1,8 +1,13 @@
-﻿"""
+"""
 Unit tests for agent-sleep MCP server adapter.
+
+Skipped automatically when the ``mcp`` package is not installed so that
+``pip install . && pytest`` works for contributors without the MCP extra.
 """
 from pathlib import Path
 import pytest
+
+pytest.importorskip("mcp", reason="mcp package not installed; install agent-sleep[mcp] to run MCP tests")
 
 from agent_sleep.mcp_server import (
     agent_sleep_status,
