@@ -211,11 +211,16 @@ def ensure_db_initialized(db_path: Optional[Path] = None) -> None:
                 ("semantic_memories", "provenance", "TEXT DEFAULT '{}'"),
                 ("semantic_memories", "last_accessed", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
                 ("candidate_rules", "scope", "TEXT NOT NULL DEFAULT 'global'"),
+                ("candidate_rules", "condition", "TEXT DEFAULT ''"),
+                ("candidate_rules", "exception", "TEXT DEFAULT ''"),
                 ("candidate_rules", "evidence_count", "INTEGER DEFAULT 1"),
                 ("candidate_rules", "contradiction_count", "INTEGER DEFAULT 0"),
                 ("candidate_rules", "times_applied", "INTEGER DEFAULT 0"),
                 ("candidate_rules", "embedding", "BLOB DEFAULT NULL"),
                 ("causal_hypotheses", "scope", "TEXT NOT NULL DEFAULT 'global'"),
+                ("causal_hypotheses", "condition", "TEXT DEFAULT ''"),
+                ("causal_hypotheses", "exception", "TEXT DEFAULT ''"),
+                ("causal_hypotheses", "provenance", "TEXT DEFAULT '{}'"),
                 ("causal_hypotheses", "embedding", "BLOB DEFAULT NULL"),
                 ("skills", "scope", "TEXT NOT NULL DEFAULT 'global'"),
                 ("self_competence", "success_count", "INTEGER DEFAULT 1"),
@@ -373,6 +378,41 @@ def delete_episodes(episode_ids: List[int], db_path: Optional[Path] = None) -> N
 # Semantic memory store (with stored vector BLOBs & Provenance)
 # ---------------------------------------------------------------------------
 
+def _merge_provenance(old_prov: dict, new_prov: dict, new_source: str = "", new_session: str = "") -> dict:
+    prov = dict(old_prov or {})
+    if new_prov:
+        prov.update(new_prov)
+    sessions = set((old_prov or {}).get("sessions", []))
+    sources = set((old_prov or {}).get("sources", []))
+    episode_ids = set((old_prov or {}).get("source_episodes", []))
+    input_hashes = set((old_prov or {}).get("input_hashes", []))
+
+    if new_session:
+        sessions.add(new_session)
+    if new_source:
+        sources.add(new_source)
+
+    for s in (new_prov or {}).get("sessions", []):
+        sessions.add(s)
+    for src in (new_prov or {}).get("sources", []):
+        sources.add(src)
+    for ep in (new_prov or {}).get("source_episodes", []):
+        episode_ids.add(ep)
+    for h in (new_prov or {}).get("input_hashes", []):
+        input_hashes.add(h)
+    if new_prov and "input_fingerprint" in new_prov:
+        input_hashes.add(new_prov["input_fingerprint"])
+
+    prov["sessions"] = sorted(list(sessions))
+    prov["sources"] = sorted(list(sources))
+    prov["source_episodes"] = sorted(list(episode_ids))
+    prov["input_hashes"] = sorted(list(input_hashes))
+    
+    # Calculate independent sources (diversity): distinct sessions + distinct external sources
+    prov["independent_sources_count"] = max(1, len(sessions) + len(sources) - (1 if sessions and sources else 0))
+    return prov
+
+
 def save_semantic_memory(
     fact: str,
     value: str,
@@ -395,34 +435,82 @@ def save_semantic_memory(
             embedding = None
 
     vec_blob = serialize_vector(embedding) if embedding is not None else None
-    prov_str = json.dumps(provenance or {})
+    incoming_prov = provenance or {}
 
     with _cursor(commit=True, db_path=db_path) as cur:
         cur.execute(
             """
-            INSERT INTO semantic_memories 
-            (scope, memory_type, fact, value, importance, confidence, utility_score, verification_status,
-             evidence_count, embedding, provenance, source)
-            VALUES (?,?,?,?,?,?,?,?,1,?,?,?)
-            ON CONFLICT(scope, memory_type, fact) DO UPDATE SET
-                value=excluded.value,
-                importance=MAX(importance, excluded.importance),
-                confidence=MIN(0.99, confidence + 0.05),
-                utility_score=MAX(utility_score, excluded.utility_score),
-                evidence_count=evidence_count + 1,
-                verification_status=CASE 
-                    WHEN verification_status = 'observed' AND evidence_count >= 1 THEN 'repeated'
-                    WHEN excluded.verification_status = 'verified' THEN 'verified'
-                    ELSE verification_status 
-                END,
-                embedding=COALESCE(excluded.embedding, embedding),
-                provenance=excluded.provenance,
-                access_count=access_count+1,
-                last_accessed=CURRENT_TIMESTAMP,
-                timestamp=CURRENT_TIMESTAMP
+            SELECT id, provenance, evidence_count, verification_status, confidence, utility_score
+            FROM semantic_memories
+            WHERE scope=? AND memory_type=? AND fact=?
             """,
-            (scope, memory_type, fact, value, importance, confidence, utility_score, verification_status, vec_blob, prov_str, source),
+            (scope, memory_type, fact),
         )
+        row = cur.fetchone()
+
+        if row:
+            old_prov = {}
+            if row["provenance"]:
+                try:
+                    old_prov = json.loads(row["provenance"])
+                except Exception:
+                    old_prov = {}
+
+            # Idempotency check: if input_fingerprint was already consolidated, don't duplicate evidence
+            incoming_fp = incoming_prov.get("input_fingerprint")
+            already_processed = incoming_fp and incoming_fp in old_prov.get("input_hashes", [])
+
+            merged_prov = _merge_provenance(old_prov, incoming_prov, new_source=source)
+            indep_sources = merged_prov.get("independent_sources_count", 1)
+            
+            old_evidence = int(row["evidence_count"] or 1)
+            new_evidence = old_evidence if already_processed else old_evidence + 1
+            
+            # Epistemic lifecycle transition gating:
+            # - Must have independent sources (not just 1 bad source repeating) or multiple verified runs
+            curr_status = row["verification_status"] or "observed"
+            if verification_status == "verified" or curr_status == "verified":
+                new_status = "verified"
+                new_conf = max(0.90, float(row["confidence"] or confidence))
+            elif indep_sources >= 2 or new_evidence >= 2:
+                new_status = "repeated"
+                new_conf = min(0.95, float(row["confidence"] or 0.75) + 0.05)
+            else:
+                new_status = curr_status
+                new_conf = float(row["confidence"] or confidence)
+
+            new_u = max(float(row["utility_score"] or 0.5), utility_score)
+
+            cur.execute(
+                """
+                UPDATE semantic_memories
+                SET value = ?,
+                    importance = MAX(importance, ?),
+                    confidence = ?,
+                    utility_score = ?,
+                    evidence_count = ?,
+                    verification_status = ?,
+                    embedding = COALESCE(?, embedding),
+                    provenance = ?,
+                    source = COALESCE(NULLIF(?, ''), source),
+                    access_count = access_count + 1,
+                    last_accessed = CURRENT_TIMESTAMP,
+                    timestamp = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (value, importance, new_conf, new_u, new_evidence, new_status, vec_blob, json.dumps(merged_prov), source, row["id"]),
+            )
+        else:
+            init_prov = _merge_provenance({}, incoming_prov, new_source=source)
+            cur.execute(
+                """
+                INSERT INTO semantic_memories 
+                (scope, memory_type, fact, value, importance, confidence, utility_score, verification_status,
+                 evidence_count, embedding, provenance, source)
+                VALUES (?,?,?,?,?,?,?,?,1,?,?,?)
+                """,
+                (scope, memory_type, fact, value, importance, confidence, utility_score, verification_status, vec_blob, json.dumps(init_prov), source),
+            )
 
 
 def recall_memories(
@@ -436,7 +524,8 @@ def recall_memories(
     db_path: Optional[Path] = None,
 ) -> List[dict]:
     """
-    Retrieve active semantic memories using pre-computed vector BLOBs.
+    Retrieve active semantic memories using pre-computed vector BLOBs and active epistemic ranking:
+      final_score = semantic_similarity * importance * confidence * utility_score * trust_multiplier
     Excludes quarantined and expired memories. Tracks access and retrieval counts.
     """
     try:
@@ -463,6 +552,14 @@ def recall_memories(
         cur.execute(f"SELECT * FROM semantic_memories {where_sql}", params)
         rows = [dict(r) for r in cur.fetchall()]
 
+    # Epistemic trust multipliers (mathematically active ranking)
+    trust_multipliers = {
+        "verified": 1.00,
+        "repeated": 0.75,
+        "observed": 0.50,
+        "raw": 0.20,
+    }
+
     scored = []
     recalled_ids = []
     for row in rows:
@@ -470,11 +567,21 @@ def recall_memories(
         if vec is None:
             vec = embed(f"{row['fact']} {row['value']}")
         sim = cosine_similarity(q_vec, vec)
-        score = sim * float(row.get("importance", 0.5)) * float(row.get("confidence", 0.8))
+
+        status = (row.get("verification_status") or "observed").lower()
+        trust = trust_multipliers.get(status, 0.50)
+        utility = max(0.10, min(1.0, float(row.get("utility_score") or 0.50)))
+        importance = float(row.get("importance") or 0.70)
+        conf = float(row.get("confidence") or 0.80)
+
+        # Active ranking score
+        score = sim * importance * conf * utility * trust
+
         if sim >= min_similarity and score >= min_score:
             row_copy = dict(row)
             row_copy.pop("embedding", None)
             row_copy["relevance_score"] = round(score, 3)
+            row_copy["epistemic_trust"] = trust
             scored.append((score, row_copy))
             recalled_ids.append(row["id"])
 
@@ -642,24 +749,67 @@ def add_candidate_rule(
     belief: str,
     confidence: float = 0.5,
     scope: str = "global",
+    condition: str = "",
+    exception: str = "",
     db_path: Optional[Path] = None,
 ) -> None:
-    vec = embed(belief)
+    vec = embed(f"{belief} {condition} {exception}")
     vec_blob = serialize_vector(vec)
 
     with _cursor(commit=True, db_path=db_path) as cur:
         cur.execute(
             """
-            INSERT INTO candidate_rules (scope, belief, confidence, embedding)
-            VALUES (?,?,?,?)
+            INSERT INTO candidate_rules (scope, belief, condition, exception, confidence, embedding)
+            VALUES (?,?,?,?,?,?)
             ON CONFLICT(scope, belief) DO UPDATE SET
+                condition=COALESCE(NULLIF(excluded.condition, ''), candidate_rules.condition),
+                exception=COALESCE(NULLIF(excluded.exception, ''), candidate_rules.exception),
                 confirmations=confirmations+1,
+                evidence_count=evidence_count+1,
                 confidence=MIN(0.99, confidence+0.05),
-                embedding=COALESCE(excluded.embedding, embedding),
+                embedding=COALESCE(excluded.embedding, candidate_rules.embedding),
                 timestamp=CURRENT_TIMESTAMP
             """,
-            (scope, belief, confidence, vec_blob),
+            (scope, belief, condition, exception, confidence, vec_blob),
         )
+
+
+def specialize_rule_with_exception(
+    rule_id: int,
+    condition: str = "",
+    exception: str = "",
+    counter_evidence: str = "",
+    db_path: Optional[Path] = None,
+) -> dict:
+    """
+    Specialize a rule with explicit context and exceptions instead of blanket deletion/quarantine.
+    Allows representational nuance: 'Rule X holds in context Y EXCEPT in context Z'.
+    """
+    with _cursor(commit=True, db_path=db_path) as cur:
+        cur.execute("SELECT id, belief, condition, exception FROM candidate_rules WHERE id=?", (rule_id,))
+        row = cur.fetchone()
+        if not row:
+            return {"status": "not_found", "rule_id": rule_id}
+
+        existing_cond = row["condition"] or ""
+        existing_exc = row["exception"] or ""
+
+        new_cond = f"{existing_cond}; {condition}".strip("; ") if condition else existing_cond
+        new_exc = f"{existing_exc}; {exception}".strip("; ") if exception else existing_exc
+
+        cur.execute(
+            """
+            UPDATE candidate_rules
+            SET condition = ?,
+                exception = ?,
+                contradiction_count = contradiction_count + 1,
+                status = 'SPECIALIZED',
+                timestamp = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (new_cond, new_exc, rule_id),
+        )
+        return {"status": "specialized", "rule_id": rule_id, "condition": new_cond, "exception": new_exc}
 
 
 def recall_rules(
@@ -672,14 +822,14 @@ def recall_rules(
 ) -> List[str]:
     """
     Selectively retrieve only the rules most semantically relevant to query_text.
-    Avoids context pollution by not injecting all rules blindly.
+    Includes contextual conditions and exceptions when present.
     """
     try:
         q_vec = embed(query_text)
     except Exception:
         return get_active_rules(scopes=scopes, db_path=db_path)[:top_k]
 
-    where_clauses = ["status IN ('CANDIDATE', 'VERIFIED')", "confidence >= ?"]
+    where_clauses = ["status IN ('CANDIDATE', 'VERIFIED', 'SPECIALIZED')", "confidence >= ?"]
     params: list = [min_confidence]
 
     if scopes:
@@ -690,7 +840,7 @@ def recall_rules(
     where_sql = f"WHERE {' AND '.join(where_clauses)}"
 
     with _cursor(db_path=db_path) as cur:
-        cur.execute(f"SELECT belief, confidence, embedding FROM candidate_rules {where_sql}", params)
+        cur.execute(f"SELECT id, belief, condition, exception, confidence, embedding FROM candidate_rules {where_sql}", params)
         rows = [dict(r) for r in cur.fetchall()]
 
     if not rows:
@@ -700,19 +850,24 @@ def recall_rules(
     for r in rows:
         vec = deserialize_vector(r.get("embedding"))
         if vec is None:
-            vec = embed(r["belief"])
+            vec = embed(f"{r['belief']} {r.get('condition','')} {r.get('exception','')}")
         sim = cosine_similarity(q_vec, vec)
         # Score combining relevance and rule confidence
         score = sim * float(r["confidence"])
         if sim > 0.25:  # Relevance threshold
-            scored.append((score, r["belief"]))
+            text = r["belief"]
+            if r.get("condition"):
+                text += f" [Applies: {r['condition']}]"
+            if r.get("exception"):
+                text += f" [Except: {r['exception']}]"
+            scored.append((score, text))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return [belief for _, belief in scored[:top_k]]
 
 
 def get_active_rules(scopes: Optional[Sequence[str]] = ("global",), db_path: Optional[Path] = None) -> List[str]:
-    where = "WHERE status IN ('CANDIDATE','VERIFIED')"
+    where = "WHERE status IN ('CANDIDATE','VERIFIED','SPECIALIZED')"
     params: list = []
     if scopes:
         placeholders = ",".join("?" * len(scopes))
@@ -721,10 +876,18 @@ def get_active_rules(scopes: Optional[Sequence[str]] = ("global",), db_path: Opt
 
     with _cursor(db_path=db_path) as cur:
         cur.execute(
-            f"SELECT belief FROM candidate_rules {where} ORDER BY confidence DESC LIMIT 10",
+            f"SELECT belief, condition, exception FROM candidate_rules {where} ORDER BY confidence DESC LIMIT 10",
             params,
         )
-        return [r["belief"] for r in cur.fetchall()]
+        results = []
+        for r in cur.fetchall():
+            text = r["belief"]
+            if r["condition"]:
+                text += f" [Applies: {r['condition']}]"
+            if r["exception"]:
+                text += f" [Except: {r['exception']}]"
+            results.append(text)
+        return results
 
 
 # ---------------------------------------------------------------------------
@@ -738,48 +901,66 @@ def save_causal_hypothesis(
     effect: str,
     confidence: float = 0.35,
     scope: str = "global",
+    condition: str = "",
+    exception: str = "",
+    provenance: Optional[dict] = None,
     db_path: Optional[Path] = None,
 ) -> None:
     """
-    Save or update a causal hypothesis with evidence accumulation.
+    Save or update a causal hypothesis with provenance diversity and evidence accumulation.
     Initial observation starts with cautious confidence (0.35).
-    Subsequent observations increment support_count and confidence gradually.
+    Subsequent observations increment support_count and scale confidence with independent sources.
     """
-    vec = embed(f"{action} {hypothesis} {effect}")
+    vec = embed(f"{action} {hypothesis} {effect} {condition} {exception}")
     vec_blob = serialize_vector(vec)
+    incoming_prov = provenance or {}
 
     with _cursor(commit=True, db_path=db_path) as cur:
-        # Check if identical hypothesis exists in this scope to increment support count
         cur.execute(
             """
-            SELECT id, support_count, confidence FROM causal_hypotheses
+            SELECT id, support_count, confidence, provenance FROM causal_hypotheses
             WHERE scope=? AND action=? AND hypothesis=?
             """,
             (scope, action[:200], hypothesis),
         )
         row = cur.fetchone()
         if row:
+            old_prov = {}
+            if row["provenance"]:
+                try:
+                    old_prov = json.loads(row["provenance"])
+                except Exception:
+                    old_prov = {}
+
+            merged_prov = _merge_provenance(old_prov, incoming_prov, new_session=session_id)
+            indep_sources = merged_prov.get("independent_sources_count", 1)
+
             new_support = int(row["support_count"] or 1) + 1
-            new_conf = min(0.95, 0.35 + 0.15 * (new_support - 1))
+            new_conf = min(0.95, 0.35 + 0.15 * (indep_sources - 1))
+
             cur.execute(
                 """
                 UPDATE causal_hypotheses
                 SET support_count = ?,
                     confidence = ?,
+                    condition = COALESCE(NULLIF(?, ''), condition),
+                    exception = COALESCE(NULLIF(?, ''), exception),
+                    provenance = ?,
                     embedding = COALESCE(?, embedding),
                     timestamp = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (new_support, new_conf, vec_blob, row["id"]),
+                (new_support, new_conf, condition, exception, json.dumps(merged_prov), vec_blob, row["id"]),
             )
         else:
+            init_prov = _merge_provenance({}, incoming_prov, new_session=session_id)
             cur.execute(
                 """
                 INSERT INTO causal_hypotheses
-                (session_id, scope, action, hypothesis, effect, confidence, support_count, embedding)
-                VALUES (?,?,?,?,?,?,1,?)
+                (session_id, scope, action, hypothesis, effect, condition, exception, confidence, support_count, provenance, embedding)
+                VALUES (?,?,?,?,?,?,?,?,1,?,?)
                 """,
-                (session_id, scope, action[:200], hypothesis, effect, confidence, vec_blob),
+                (session_id, scope, action[:200], hypothesis, effect, condition, exception, confidence, json.dumps(init_prov), vec_blob),
             )
 
 
@@ -812,7 +993,7 @@ def recall_causal_hypotheses(
 
     with _cursor(db_path=db_path) as cur:
         cur.execute(
-            f"SELECT id, action, hypothesis, effect, confidence, support_count, contradiction_count, embedding FROM causal_hypotheses {where_sql}",
+            f"SELECT id, action, hypothesis, effect, condition, exception, confidence, support_count, contradiction_count, embedding FROM causal_hypotheses {where_sql}",
             params,
         )
         rows = [dict(r) for r in cur.fetchall()]

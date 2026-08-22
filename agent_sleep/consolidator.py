@@ -71,6 +71,7 @@ class SleepConsolidator:
         return await self._run_async(session_id)
 
     async def _run_async(self, session_id: str) -> dict:
+        import hashlib
         import uuid
         from agent_sleep.storage.db import (
             get_unprocessed_episodes,
@@ -80,16 +81,16 @@ class SleepConsolidator:
         start = time.time()
         run_id = uuid.uuid4().hex[:12]
         stage_status: Dict[str, str] = {
-            "compression": "pending",
-            "replay": "pending",
-            "distillation": "pending",
-            "how_distillation": "skipped" if self.llm_fn is None else "pending",
-            "rules": "pending",
-            "causal": "pending",
-            "self_reflection": "pending",
-            "hierarchy": "pending",
-            "finalize": "pending",
-            "decay": "pending",
+            "compression": "SKIPPED",
+            "replay": "PENDING",
+            "distillation": "PENDING",
+            "how_distillation": "SKIPPED" if self.llm_fn is None else "PENDING",
+            "rules": "PENDING",
+            "causal": "PENDING",
+            "self_reflection": "PENDING",
+            "hierarchy": "PENDING",
+            "finalize": "PENDING",
+            "decay": "PENDING",
         }
 
         stats: Dict[str, Any] = {
@@ -129,7 +130,7 @@ class SleepConsolidator:
                 save_fn=_save_mem,
             )
             stats["compression_report"] = compression_report
-            stage_status["compression"] = "success"
+            stage_status["compression"] = "SUCCESS" if compression_report.get("clusters_compressed") else "NO_DATA"
             if compression_report.get("clusters_compressed"):
                 self._emit(
                     "COMPRESSION",
@@ -138,7 +139,7 @@ class SleepConsolidator:
                     8,
                 )
         except Exception as e:
-            stage_status["compression"] = f"failed: {e}"
+            stage_status["compression"] = f"FAILED: {e}"
             logger.warning(f"Episodic compression failed (non-fatal): {e}")
 
         # ── Fetch episodes ─────────────────────────────────────────────
@@ -146,21 +147,29 @@ class SleepConsolidator:
         if not episodes_raw:
             self._emit("DONE", "No unprocessed episodes. Nothing to consolidate.", 100)
             stats["duration_seconds"] = round(time.time() - start, 2)
-            stage_status["replay"] = "empty"
+            stage_status["replay"] = "NO_DATA"
             return stats
 
         self._emit("REPLAY", f"Fetched {len(episodes_raw)} unprocessed episodes", 10)
-        stage_status["replay"] = "success"
+        stage_status["replay"] = "SUCCESS"
 
-        # ── Stage 1: Priority Replay ───────────────────────────────────
+        # ── Stage 1: Priority Replay & Deterministic Fingerprinting ─────
         prioritized = self._prioritize(episodes_raw)
         stats["episodes_processed"] = len(prioritized)
+
+        # Deterministic input fingerprint for crash-consistency & idempotency
+        sorted_ep_ids = sorted(ep.get("id", 0) for ep in prioritized)
+        input_fingerprint = hashlib.sha256(f"{session_id}:{self.scope}:{sorted_ep_ids}".encode("utf-8")).hexdigest()[:16]
 
         def _bound_save(fact, value, **kwargs):
             from agent_sleep.storage.db import save_semantic_memory
             prov = kwargs.pop("provenance", {}) or {}
             prov["consolidation_run_id"] = run_id
-            return save_semantic_memory(fact, value, provenance=prov, db_path=self.db_path, **kwargs)
+            prov["input_fingerprint"] = input_fingerprint
+            prov["sessions"] = [session_id]
+            prov["source_episodes"] = sorted_ep_ids
+            target_scope = kwargs.pop("scope", self.scope)
+            return save_semantic_memory(fact, value, provenance=prov, scope=target_scope, db_path=self.db_path, **kwargs)
 
         # ── Stage 2: Episodic → Semantic Distillation ─────────────────
         self._emit("DISTILLATION", "Distilling episodes into semantic memories", 20)
@@ -168,7 +177,7 @@ class SleepConsolidator:
             from agent_sleep.episodic import consolidate_episodes
             consolidation_report = consolidate_episodes(prioritized, save_fn=_bound_save, scope=self.scope)
             stats["memories_written"] += consolidation_report["written"]
-            stage_status["distillation"] = "success"
+            stage_status["distillation"] = "SUCCESS" if consolidation_report["written"] > 0 else "NO_DATA"
             self._emit(
                 "DISTILLATION",
                 f"Wrote {consolidation_report['written']} memories "
@@ -177,7 +186,7 @@ class SleepConsolidator:
                 35,
             )
         except Exception as e:
-            stage_status["distillation"] = f"failed: {e}"
+            stage_status["distillation"] = f"FAILED: {e}"
             logger.warning(f"Episodic distillation failed (non-fatal): {e}")
             logger.debug("Distillation traceback:", exc_info=True)
 
@@ -190,9 +199,9 @@ class SleepConsolidator:
                     prioritized, llm_fn=self.llm_fn, save_fn=_bound_save, scope=self.scope
                 )
                 stats["memories_written"] += how_report["how_written"]
-                stage_status["how_distillation"] = "success"
+                stage_status["how_distillation"] = "SUCCESS" if how_report["how_written"] > 0 else "NO_DATA"
             except Exception as e:
-                stage_status["how_distillation"] = f"failed: {e}"
+                stage_status["how_distillation"] = f"FAILED: {e}"
                 logger.warning(f"HOW distillation failed (non-fatal): {e}")
 
         # ── Stage 4: Rule Promotion ────────────────────────────────────
@@ -214,9 +223,9 @@ class SleepConsolidator:
                 scope=self.scope,
             )
             stats["rules_promoted"] = rule_report["rules_promoted"]
-            stage_status["rules"] = "success"
+            stage_status["rules"] = "SUCCESS" if rule_report["rules_promoted"] > 0 else "NO_DATA"
         except Exception as e:
-            stage_status["rules"] = f"failed: {e}"
+            stage_status["rules"] = f"FAILED: {e}"
             logger.warning(f"Rule promotion failed (non-fatal): {e}")
 
         # ── Stage 5: Error Analysis (Causal hypotheses with cautious initial confidence) ───
@@ -239,15 +248,21 @@ class SleepConsolidator:
                         effect=f"Execution Failed: {reason[:80]}",
                         confidence=0.35,  # Cautious initial confidence (evidence accumulation)
                         scope=ep.get("scope", self.scope),
+                        provenance={
+                            "consolidation_run_id": run_id,
+                            "input_fingerprint": input_fingerprint,
+                            "sessions": [session_id],
+                            "sources": [self.scope],
+                        },
                         db_path=self.db_path,
                     )
                     beliefs_revised += 1
                 except Exception as e:
                     logger.warning(f"Causal hypothesis save failed: {e}")
             stats["beliefs_revised"] = beliefs_revised
-            stage_status["causal"] = "success"
+            stage_status["causal"] = "SUCCESS" if beliefs_revised > 0 else "NO_DATA"
         except Exception as e:
-            stage_status["causal"] = f"failed: {e}"
+            stage_status["causal"] = f"FAILED: {e}"
 
         # ── Stage 6: Self-Reflection (competence tracking) ────────────
         self._emit("SELF_REFLECTION", "Updating self-competence model", 80)
@@ -255,9 +270,9 @@ class SleepConsolidator:
             from agent_sleep.self_model import run_self_reflection
             reflection_report = run_self_reflection(prioritized, db_path=self.db_path)
             stats["domains_updated"] = reflection_report["domains_updated"]
-            stage_status["self_reflection"] = "success"
+            stage_status["self_reflection"] = "SUCCESS"
         except Exception as e:
-            stage_status["self_reflection"] = f"failed: {e}"
+            stage_status["self_reflection"] = f"FAILED: {e}"
             logger.warning(f"Self-reflection failed (non-fatal): {e}")
 
         # ── Stage 6.5: Concept Hierarchy Clustering ────────────────────
@@ -274,9 +289,9 @@ class SleepConsolidator:
                 vec = embed(ep_text)
                 hierarchy.add_memory(vec, outcome=outcome_val, example=goal[:80])
             hierarchy.save()
-            stage_status["hierarchy"] = "success"
+            stage_status["hierarchy"] = "SUCCESS"
         except Exception as e:
-            stage_status["hierarchy"] = f"failed: {e}"
+            stage_status["hierarchy"] = f"FAILED: {e}"
             logger.debug(f"Concept hierarchy clustering skipped: {e}")
 
         # ── Stage 7: Mark episodes as processed ───────────────────────
@@ -284,9 +299,9 @@ class SleepConsolidator:
         try:
             episode_ids = [ep["id"] for ep in prioritized if ep.get("id")]
             mark_episodes_processed(episode_ids, db_path=self.db_path)
-            stage_status["finalize"] = "success"
+            stage_status["finalize"] = "SUCCESS"
         except Exception as e:
-            stage_status["finalize"] = f"failed: {e}"
+            stage_status["finalize"] = f"FAILED: {e}"
             logger.warning(f"mark_episodes_processed failed: {e}")
 
         # ── Stage 8: Memory Utility Decay & Forgetting ────────────────
@@ -295,9 +310,9 @@ class SleepConsolidator:
             from agent_sleep.storage.db import decay_stale_memories
             decay_report = decay_stale_memories(db_path=self.db_path)
             stats["pruned_stale_memories"] = decay_report.get("pruned_stale_memories", 0)
-            stage_status["decay"] = "success"
+            stage_status["decay"] = "SUCCESS"
         except Exception as e:
-            stage_status["decay"] = f"failed: {e}"
+            stage_status["decay"] = f"FAILED: {e}"
             logger.warning(f"Memory decay failed (non-fatal): {e}")
 
         stats["duration_seconds"] = round(time.time() - start, 2)

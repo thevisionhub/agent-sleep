@@ -70,7 +70,7 @@ def test_hierarchy_sleep_closed_loop(tmp_path):
     assert structured["cluster_insight"]["outcome_observations"] >= 1
     assert "confidence" in structured["cluster_insight"]
     assert "recommendation_strength" in structured["cluster_insight"]
-    assert structured["subsystem_status"]["hierarchy"] == "ok"
+    assert structured["subsystem_status"]["hierarchy"] in ("SUCCESS", "ok")
 
 
 def test_hierarchy_l2_statistics(temp_npz):

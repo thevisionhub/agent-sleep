@@ -221,8 +221,97 @@ def _cmd_reset(args) -> None:
         cur.execute("DELETE FROM execution_episodes WHERE scope=?", (scope,))
         ep_del = cur.rowcount
 
-    print(f"Reset complete for scope '{scope}':")
-    print(f"  Deleted {mem_del} memories, {rule_del} rules, {ep_del} episodes.")
+# ---------------------------------------------------------------------------
+# status — inspect memory health, epistemic state, and embedding backend
+# ---------------------------------------------------------------------------
+
+def _cmd_status(args) -> None:
+    db_path = Path(args.db) if args.db else _default_db()
+    scope = args.scope or _default_scope()
+
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from agent_sleep.storage.embeddings import get_backend_info
+    from agent_sleep.storage.db import ensure_db_initialized, _cursor
+
+    backend = get_backend_info()
+
+    if not db_path.exists():
+        print(f"\n[agent-sleep status]")
+        print(f"  Database : {db_path} (not created yet)")
+        print(f"  Scope    : {scope}")
+        print(f"  Backend  : {backend['backend']} (mode: {backend['mode']})")
+        return
+
+    ensure_db_initialized(db_path)
+    with _cursor(db_path=db_path) as cur:
+        cur.execute("SELECT verification_status, COUNT(*) as cnt FROM semantic_memories WHERE scope IN (?, 'global') GROUP BY verification_status", (scope,))
+        epistemic = {r["verification_status"]: r["cnt"] for r in cur.fetchall()}
+
+        cur.execute("SELECT COUNT(*) FROM candidate_rules WHERE scope IN (?, 'global') AND status != 'REFUTED'", (scope,))
+        rules_cnt = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM causal_hypotheses WHERE scope IN (?, 'global')", (scope,))
+        causal_cnt = cur.fetchone()[0]
+
+        cur.execute("SELECT domain, competence, uncertainty FROM self_competence")
+        competence = [dict(r) for r in cur.fetchall()]
+
+        cur.execute("SELECT COUNT(*) FROM execution_episodes WHERE processed_by_sleep=0")
+        pending_ep = cur.fetchone()[0]
+
+    SEP = "─" * 70
+    print(f"\n{SEP}")
+    print(f"  agent-sleep System Status  |  scope: {scope}")
+    print(f"{SEP}")
+    print(f"  Embedding Backend : {backend['backend']} (mode: {backend['mode']}, dim: {backend['dimension']})")
+    if backend.get("is_fallback"):
+        print(f"  Note              : {backend.get('note')}")
+    print(f"  Database Path     : {db_path}")
+    print(f"  Pending Episodes  : {pending_ep}")
+    print(f"  Active Rules      : {rules_cnt}")
+    print(f"  Causal Hypotheses : {causal_cnt}")
+    print(f"  Epistemic Memory States:")
+    for st in ["verified", "repeated", "observed", "raw", "quarantined"]:
+        print(f"    - {st:<12}: {epistemic.get(st, 0)}")
+    if competence:
+        print(f"  Self-Competence Model:")
+        for c in competence:
+            print(f"    - {c['domain']:<12}: {c['competence']:.0%} (uncertainty: ±{c['uncertainty']:.2f})")
+    print(f"{SEP}\n")
+
+
+# ---------------------------------------------------------------------------
+# benchmark — canonical evaluation across memory conditions
+# ---------------------------------------------------------------------------
+
+def _cmd_benchmark(args) -> None:
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from benchmarks.agent_eval.runner import run_benchmark_condition
+
+    print("=" * 72)
+    print(" AGENT-SLEEP: CANONICAL EVALUATION BENCHMARK SUITE")
+    print("=" * 72)
+
+    conditions = ["BASELINE", "NAIVE_RAG", "AGENT_SLEEP"]
+    results = []
+    for cond in conditions:
+        print(f"  Evaluating condition: {cond}...")
+        res = run_benchmark_condition(cond)
+        results.append(res)
+
+    SEP = "-" * 72
+    print(f"\n{SEP}")
+    print(f"{'Condition':<18} {'Pass Rate':<12} {'Avg Calls':<14} {'Repeated Mistakes':<18} {'Memory Usefulness':<18}")
+    print(SEP)
+    for res in results:
+        print(
+            f"{res['condition']:<18} "
+            f"{res['pass_rate']:>7.0%}      "
+            f"{res['avg_llm_calls']:>8.1f}      "
+            f"{res['repeated_mistakes']:>14d}      "
+            f"{res.get('memory_usefulness_rate', 0.0):>14.0%}"
+        )
+    print(f"{SEP}\n")
 
 
 # ---------------------------------------------------------------------------
@@ -232,17 +321,25 @@ def _cmd_reset(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="agent-sleep",
-        description="Inspect and configure your agent's persistent memory.",
+        description="Inspect, configure, and benchmark your agent's persistent memory.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     # init
     sub.add_parser("init", help="Print the mcp_config.json snippet for your platform.")
 
+    # status
+    p_stat = sub.add_parser("status", help="Inspect embedding backend and memory health.")
+    p_stat.add_argument("--scope", default="", help="Scope to inspect (default: current dir name).")
+    p_stat.add_argument("--db", default="", help="Path to SQLite DB (default: .agent_sleep/memory.db).")
+
     # show
     p_show = sub.add_parser("show", help="Display stored memories and rules.")
     p_show.add_argument("--scope", default="", help="Scope to inspect (default: current dir name).")
     p_show.add_argument("--db", default="", help="Path to SQLite DB (default: .agent_sleep/memory.db).")
+
+    # benchmark
+    sub.add_parser("benchmark", help="Run the canonical 3-condition evaluation benchmark.")
 
     # reset
     p_reset = sub.add_parser("reset", help="Clear all data for a scope.")
@@ -253,11 +350,16 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "init":
         _cmd_init(args)
+    elif args.command == "status":
+        _cmd_status(args)
     elif args.command == "show":
         _cmd_show(args)
+    elif args.command == "benchmark":
+        _cmd_benchmark(args)
     elif args.command == "reset":
         _cmd_reset(args)
 
 
 if __name__ == "__main__":
     main()
+

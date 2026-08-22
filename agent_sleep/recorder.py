@@ -264,47 +264,47 @@ class AgentMemory:
             "hierarchy": "ok",
         }
 
+        from agent_sleep.storage.embeddings import get_backend_info
+        backend_info = get_backend_info()
+
         try:
             memories = recall_memories(task, top_k=top_k, scopes=active_scopes, db_path=self.db_path)
-            if not memories:
-                subsystem_status["memories"] = "empty"
+            subsystem_status["memories"] = "SUCCESS" if memories else "NO_DATA"
         except Exception as e:
             memories = []
-            subsystem_status["memories"] = f"failed: {e}"
+            subsystem_status["memories"] = f"FAILED: {e}"
 
         try:
             rules = recall_rules(task, top_k=top_k_rules, scopes=active_scopes, db_path=self.db_path)
-            if not rules:
-                subsystem_status["rules"] = "empty"
+            subsystem_status["rules"] = "SUCCESS" if rules else "NO_DATA"
         except Exception as e:
             rules = []
-            subsystem_status["rules"] = f"failed: {e}"
+            subsystem_status["rules"] = f"FAILED: {e}"
 
         try:
             causal = recall_causal_hypotheses(task, top_k=3, scopes=active_scopes, db_path=self.db_path)
-            if not causal:
-                subsystem_status["causal"] = "empty"
+            subsystem_status["causal"] = "SUCCESS" if causal else "NO_DATA"
         except Exception as e:
             causal = []
-            subsystem_status["causal"] = f"failed: {e}"
+            subsystem_status["causal"] = f"FAILED: {e}"
 
         try:
             self_model = SelfModel(db_path=self.db_path)
             policy = self_model.get_behavioral_policy(domain, db_path=self.db_path)
+            subsystem_status["self_model"] = "SUCCESS"
         except Exception as e:
             policy = {"competence": 0.5, "uncertainty": 0.5, "level": "MODERATE", "directive": "Standard execution."}
-            subsystem_status["self_model"] = f"failed: {e}"
+            subsystem_status["self_model"] = f"FAILED: {e}"
 
         cluster_info = None
         try:
             hierarchy = get_hierarchy(db_path=self.db_path)
             vec = embed(task)
             cluster_info = hierarchy.query(vec, level=1, min_similarity=HIERARCHY_RECALL_THRESHOLD)
-            if cluster_info is None:
-                subsystem_status["hierarchy"] = "no_match"
+            subsystem_status["hierarchy"] = "SUCCESS" if cluster_info is not None else "NO_DATA"
         except Exception as e:
             cluster_info = None
-            subsystem_status["hierarchy"] = f"failed: {e}"
+            subsystem_status["hierarchy"] = f"FAILED: {e}"
 
         return {
             "memories": memories,
@@ -315,5 +315,11 @@ class AgentMemory:
             "operational_policy": policy,
             "cluster_insight": cluster_info,
             "subsystem_status": subsystem_status,
+            "embedding_backend": backend_info,
             "scopes": active_scopes,
         }
+
+    def specialize_rule(self, rule_id: int, condition: str = "", exception: str = "") -> dict:
+        """Specialize a rule with explicit context conditions or exceptions."""
+        from agent_sleep.storage.db import specialize_rule_with_exception
+        return specialize_rule_with_exception(rule_id, condition=condition, exception=exception, db_path=self.db_path)

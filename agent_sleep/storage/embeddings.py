@@ -21,6 +21,29 @@ _model = None
 _BACKEND: str = "none"
 
 
+def get_backend_info() -> dict:
+    """
+    Return explicit metadata about the active embedding backend and semantic capability.
+    """
+    _load_model()
+    if _BACKEND == "sentence_transformers":
+        return {
+            "backend": "sentence_transformers",
+            "mode": "semantic",
+            "model": "all-MiniLM-L6-v2",
+            "dimension": 384,
+            "is_fallback": False,
+        }
+    return {
+        "backend": "hashed_bow",
+        "mode": "lexical",
+        "model": "none",
+        "dimension": 384,
+        "is_fallback": True,
+        "note": "Hashed bag-of-words fallback handles keyword overlap. Install agent-sleep[semantic] for cross-domain semantic transfer.",
+    }
+
+
 def _load_model() -> None:
     global _model, _BACKEND
     if _BACKEND != "none":
