@@ -1,4 +1,4 @@
-﻿"""
+"""
 Self-model: tracks the agent's own competence per domain.
 
 After consolidation the agent knows not just WHAT it learned, but HOW GOOD
@@ -44,61 +44,114 @@ def infer_domain(text: str) -> str:
 
 class SelfModel:
     """
-    Tracks agent competence per task domain.
+    Tracks agent competence per task domain and derives operational behavioral policies.
 
     In-memory state, persisted via db.update_competence on each update.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        self.db_path = db_path
         self._competence: Dict[str, float] = {}
+        self._load_from_db()
 
-    def update(self, domain: str, success: bool) -> float:
+    def _load_from_db(self) -> None:
+        try:
+            from agent_sleep.storage.db import get_all_competencies
+            self._competence = get_all_competencies(db_path=self.db_path)
+        except Exception as e:
+            logger.debug(f"Could not load initial competencies from DB: {e}")
+
+    def update(self, domain: str, success: bool, db_path: Optional[Path] = None) -> float:
         """
         Update competence for a domain after one outcome.
 
         Returns the new competence score (0-1).
         """
+        target_db = db_path or self.db_path
         outcome = 1.0 if success else 0.0
-        current = self._competence.get(domain, 0.5)
+        current = self.get_competence(domain, db_path=target_db)
         new_value = current * (1 - _EMA_ALPHA) + outcome * _EMA_ALPHA
         self._competence[domain] = new_value
 
         try:
             from agent_sleep.storage.db import update_competence
-            update_competence(domain, new_value)
+            update_competence(domain, new_value, db_path=target_db)
         except Exception as e:
             logger.warning(f"Could not persist competence update: {e}")
 
         logger.debug(f"Self-model: {domain} competence {current:.2f} -> {new_value:.2f}")
         return new_value
 
-    def get_competence(self, domain: str) -> float:
+    def get_competence(self, domain: str, db_path: Optional[Path] = None) -> float:
         """Return the current competence score for a domain (0-1)."""
-        return self._competence.get(domain, 0.5)
+        target_db = db_path or self.db_path
+        if domain in self._competence:
+            return self._competence[domain]
+        try:
+            from agent_sleep.storage.db import get_domain_competence
+            record = get_domain_competence(domain, db_path=target_db)
+            score = float(record.get("competence", 0.5))
+            self._competence[domain] = score
+            return score
+        except Exception:
+            return 0.5
+
+    def get_behavioral_policy(self, domain: str, db_path: Optional[Path] = None) -> dict:
+        """
+        Derive an actionable operational policy based on self-competence.
+        Changes agent verification intensity, retry budget, and execution strategy.
+        """
+        c = self.get_competence(domain, db_path=db_path)
+        if c >= 0.80:
+            return {
+                "domain": domain,
+                "competence": round(c, 2),
+                "level": "HIGH",
+                "verification_intensity": "LIGHTWEIGHT",
+                "retry_budget": 2,
+                "autonomy": "HIGH",
+                "directive": f"High historical competence in {domain} ({c:.0%}). Fast-path execution permitted.",
+            }
+        elif c >= 0.50:
+            return {
+                "domain": domain,
+                "competence": round(c, 2),
+                "level": "MODERATE",
+                "verification_intensity": "STANDARD",
+                "retry_budget": 3,
+                "autonomy": "BALANCED",
+                "directive": f"Moderate competence in {domain} ({c:.0%}). Standard error handling and testing required.",
+            }
+        else:
+            return {
+                "domain": domain,
+                "competence": round(c, 2),
+                "level": "LOW",
+                "verification_intensity": "STRICT",
+                "retry_budget": 5,
+                "autonomy": "CAUTIOUS",
+                "directive": f"Low historical competence in {domain} ({c:.0%}). Mandatory pre-execution validation, defensive error handling, and test verification before completion.",
+            }
 
     def get_summary(self) -> dict:
         """Return all tracked domains and their competence scores."""
         return dict(self._competence)
 
-    def confidence_statement(self, domain: str) -> str:
+    def confidence_statement(self, domain: str, db_path: Optional[Path] = None) -> str:
         """
-        Return a natural-language confidence statement for prompt injection.
+        Return a natural-language confidence directive for prompt injection.
         """
-        c = self.get_competence(domain)
-        if c >= 0.85:
-            return f"High confidence in {domain} tasks (historical accuracy: {c:.0%})."
-        if c >= 0.65:
-            return f"Moderate confidence in {domain} tasks (historical accuracy: {c:.0%})."
-        return f"Low confidence in {domain} tasks (historical accuracy: {c:.0%}). Double-check this work."
+        policy = self.get_behavioral_policy(domain, db_path=db_path)
+        return f"🛡 [SELF-MODEL: {policy['level']} COMPETENCE IN {domain.upper()}] Policy: {policy['directive']}"
 
 
-def run_self_reflection(episodes: list) -> dict:
+def run_self_reflection(episodes: list, db_path: Optional[Path] = None) -> dict:
     """
     Process a batch of consolidated episodes to update the self-model.
 
     Returns a summary of competence updates.
     """
-    self_model = SelfModel()
+    self_model = SelfModel(db_path=db_path)
     updates: Dict[str, list] = {}
 
     for ep in episodes:
@@ -110,7 +163,7 @@ def run_self_reflection(episodes: list) -> dict:
 
         domain = infer_domain(goal + " " + action)
         success = outcome == "success"
-        new_score = self_model.update(domain, success)
+        new_score = self_model.update(domain, success, db_path=db_path)
         updates.setdefault(domain, []).append(new_score)
 
     return {

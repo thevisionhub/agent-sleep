@@ -140,7 +140,7 @@ class ConceptHierarchy:
             self._l2_centroids[l2_idx] = self._normalize(new_c)
             self._l2_counts[l2_idx] = n + 1
 
-    def query(self, embedding: np.ndarray, level: int = 1) -> Optional[dict]:
+    def query(self, embedding: np.ndarray, level: int = 1, min_similarity: Optional[float] = None) -> Optional[dict]:
         """
         Find the nearest cluster to this embedding and return what it knows.
 
@@ -152,6 +152,8 @@ class ConceptHierarchy:
         embedding : np.ndarray
         level : int
             1 = L1 (concrete clusters), 2 = L2 (abstract clusters).
+        min_similarity : float, optional
+            Override matching threshold (defaults to threshold_l1 or threshold_l2).
 
         Returns
         -------
@@ -163,7 +165,7 @@ class ConceptHierarchy:
         """
         z = self._normalize(np.asarray(embedding, dtype=np.float32))
         centroids = self._l1_centroids if level == 1 else self._l2_centroids
-        threshold = self.threshold_l1 if level == 1 else self.threshold_l2
+        threshold = min_similarity if min_similarity is not None else (self.threshold_l1 if level == 1 else self.threshold_l2)
 
         idx = self._best_match(z, centroids, threshold)
         if idx is None:
@@ -171,12 +173,12 @@ class ConceptHierarchy:
 
         result: dict = {
             "level": level,
-            "similarity": self._cosine(z, centroids[idx]),
+            "similarity": round(self._cosine(z, centroids[idx]), 3),
             "count": (self._l1_counts if level == 1 else self._l2_counts)[idx],
         }
         if level == 1:
             n = self._l1_outcome_n[idx]
-            result["mean_outcome"] = self._l1_outcome_sum[idx] / n if n > 0 else None
+            result["mean_outcome"] = round(self._l1_outcome_sum[idx] / n, 3) if n > 0 else None
             result["outcome_observations"] = n
             result["example"] = self._l1_examples[idx]
         return result
@@ -193,7 +195,7 @@ class ConceptHierarchy:
     # Persistence
     # ------------------------------------------------------------------
 
-    def save(self, path: Optional[str] = None) -> None:
+    def save(self, path: Optional[Union[str, Path]] = None) -> None:
         """Persist cluster state to disk."""
         target = Path(path) if path else self.save_path
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -212,7 +214,7 @@ class ConceptHierarchy:
         except Exception as e:
             logger.warning(f"ConceptHierarchy save failed: {e}")
 
-    def load(self, path: Optional[str] = None) -> None:
+    def load(self, path: Optional[Union[str, Path]] = None) -> None:
         """Load cluster state from disk. No-op if file doesn't exist."""
         target = Path(path) if path else self.save_path
         if not target.exists():
@@ -226,7 +228,7 @@ class ConceptHierarchy:
             self._l1_examples = list(data["l1_examples"])
             self._l2_centroids = list(data["l2_centroids"])
             self._l2_counts = list(data["l2_counts"].astype(int))
-            logger.info(f"ConceptHierarchy loaded: {len(self._l1_centroids)} L1, {len(self._l2_centroids)} L2 clusters")
+            logger.debug(f"ConceptHierarchy loaded: {len(self._l1_centroids)} L1, {len(self._l2_centroids)} L2 clusters")
         except Exception as e:
             logger.warning(f"ConceptHierarchy load failed (starting fresh): {e}")
 
@@ -259,6 +261,23 @@ class ConceptHierarchy:
         return best_idx
 
 
-# Module-level singleton — loaded once per process
+def get_hierarchy(db_path: Optional[Union[str, Path]] = None) -> ConceptHierarchy:
+    """Retrieve or initialize the concept hierarchy for the active project/db."""
+    if db_path:
+        p = Path(db_path)
+        save_path = p.parent / "concept_hierarchy.npz"
+    else:
+        env_db = os.environ.get("AGENT_SLEEP_DB")
+        if env_db:
+            save_path = Path(env_db).parent / "concept_hierarchy.npz"
+        else:
+            save_path = Path.cwd() / ".agent_sleep" / "concept_hierarchy.npz"
+    h = ConceptHierarchy(save_path=save_path)
+    h.load()
+    return h
+
+
+# Module-level default singleton
 global_hierarchy = ConceptHierarchy()
 global_hierarchy.load()
+

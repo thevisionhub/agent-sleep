@@ -1,4 +1,4 @@
-﻿"""
+"""
 Embedding utility for agent-sleep.
 
 Uses sentence-transformers (all-MiniLM-L6-v2) when available.
@@ -27,7 +27,10 @@ def _load_model() -> None:
         return
     try:
         from sentence_transformers import SentenceTransformer
-        _model = SentenceTransformer("all-MiniLM-L6-v2")
+        try:
+            _model = SentenceTransformer("all-MiniLM-L6-v2", local_files_only=True)
+        except Exception:
+            _model = SentenceTransformer("all-MiniLM-L6-v2")
         _BACKEND = "sentence_transformers"
         logger.info("agent-sleep: initialized all-MiniLM-L6-v2 embedding model")
     except ImportError:

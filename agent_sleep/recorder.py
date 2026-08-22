@@ -1,4 +1,4 @@
-﻿"""
+"""
 AgentMemory — public-facing recorder and recall interface (v0.1.1).
 
 Improvements in v0.1.1:
@@ -15,10 +15,14 @@ from typing import List, Optional, Sequence, Union
 
 from agent_sleep.storage.db import (
     ensure_db_initialized,
+    recall_causal_hypotheses,
     recall_memories,
     recall_rules,
     save_episode,
 )
+from agent_sleep.self_model import SelfModel, infer_domain
+from agent_sleep.hierarchy import get_hierarchy
+from agent_sleep.storage.embeddings import embed
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +121,7 @@ class AgentMemory:
         )
 
     # ------------------------------------------------------------------
-    # Recall (Selective & Scope-Aware)
+    # Recall (Selective, Scope-Aware & Closed-Loop)
     # ------------------------------------------------------------------
 
     def recall(
@@ -127,14 +131,17 @@ class AgentMemory:
         top_k: int = 5,
         top_k_rules: int = 3,
         include_rules: bool = True,
+        include_causal: bool = True,
+        include_competence: bool = True,
+        include_cluster: bool = True,
         scopes: Optional[Sequence[str]] = None,
         memory_types: Optional[Sequence[str]] = None,
     ) -> str:
         """
-        Retrieve relevant memories & rules for a task.
+        Retrieve relevant memories, rules, causal hypotheses, and competence policies.
 
-        Selectively injects only high-confidence, semantically relevant rules
-        and memories to prevent prompt pollution.
+        Selectively injects high-confidence, operational context to actively guide
+        agent decision making, tool parameters, and verification intensity.
         """
         active_scopes = list(scopes) if scopes else (
             [self.scope] if self.scope == "global" else [self.scope, "global"]
@@ -155,11 +162,37 @@ class AgentMemory:
             db_path=self.db_path,
         ) if include_rules else []
 
-        if not memories and not rules:
+        causal = recall_causal_hypotheses(
+            task,
+            top_k=2,
+            scopes=active_scopes,
+            db_path=self.db_path,
+        ) if include_causal else []
+
+        domain = infer_domain(task)
+        self_model = SelfModel(db_path=self.db_path)
+        policy = self_model.get_behavioral_policy(domain, db_path=self.db_path) if include_competence else None
+
+        cluster_info = None
+        if include_cluster:
+            try:
+                hierarchy = get_hierarchy(db_path=self.db_path)
+                vec = embed(task)
+                cluster_info = hierarchy.query(vec, level=1, min_similarity=0.60)
+            except Exception:
+                cluster_info = None
+
+        if not memories and not rules and not causal and (policy is None or policy["level"] == "MODERATE") and not cluster_info:
             return ""
 
         lines = ["[MEMORY CONTEXT]"]
 
+        # 1. Operational Policy / Self-Competence Directive
+        if include_competence and policy and policy["level"] != "MODERATE":
+            lines.append(f"🛡 [SELF-MODEL: {policy['level']} COMPETENCE IN {domain.upper()}]")
+            lines.append(f"  Directive: {policy['directive']}")
+
+        # 2. Semantic Memories
         if memories:
             lines.append("Relevant past experience:")
             for m in memories:
@@ -172,10 +205,24 @@ class AgentMemory:
                 ver_badge = f"({status})" if status == "verified" else ""
                 lines.append(f"  {tag} {m['fact']} {ver_badge}: {m['value']}")
 
+        # 3. Causal Hypotheses
+        if causal:
+            lines.append("⚡ [CAUSAL MECHANISMS & TRAPS]:")
+            for c in causal:
+                lines.append(f"  • {c['hypothesis']}")
+
+        # 4. Applicable behavioral rules
         if rules:
             lines.append("Applicable behavioral rules:")
             for rule in rules:
                 lines.append(f"  ▶ {rule}")
+
+        # 5. Concept Hierarchy Cluster Track Record
+        if cluster_info and cluster_info.get("mean_outcome") is not None:
+            mo = cluster_info["mean_outcome"]
+            obs = cluster_info["outcome_observations"]
+            ex = cluster_info.get("example") or "Similar task pattern"
+            lines.append(f"📊 [CLUSTER TRACK RECORD] '{ex}': historical success rate {mo:.0%} across {obs} prior attempts.")
 
         lines.append("[END MEMORY CONTEXT]")
         return "\n".join(lines)
@@ -188,14 +235,33 @@ class AgentMemory:
         top_k_rules: int = 3,
         scopes: Optional[Sequence[str]] = None,
     ) -> dict:
-        """Return structured dictionary for custom prompt formatting."""
+        """Return structured dictionary for custom prompt formatting and programmatic agent control."""
         active_scopes = list(scopes) if scopes else (
             [self.scope] if self.scope == "global" else [self.scope, "global"]
         )
         memories = recall_memories(task, top_k=top_k, scopes=active_scopes, db_path=self.db_path)
         rules = recall_rules(task, top_k=top_k_rules, scopes=active_scopes, db_path=self.db_path)
+        causal = recall_causal_hypotheses(task, top_k=3, scopes=active_scopes, db_path=self.db_path)
+
+        domain = infer_domain(task)
+        self_model = SelfModel(db_path=self.db_path)
+        policy = self_model.get_behavioral_policy(domain, db_path=self.db_path)
+
+        cluster_info = None
+        try:
+            hierarchy = get_hierarchy(db_path=self.db_path)
+            vec = embed(task)
+            cluster_info = hierarchy.query(vec, level=1, min_similarity=0.60)
+        except Exception:
+            cluster_info = None
+
         return {
             "memories": memories,
             "rules": rules,
+            "causal_hypotheses": causal,
+            "domain": domain,
+            "self_competence": policy["competence"],
+            "operational_policy": policy,
+            "cluster_insight": cluster_info,
             "scopes": active_scopes,
         }

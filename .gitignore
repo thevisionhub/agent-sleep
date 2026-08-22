@@ -15,4 +15,6 @@ benchmarks/results.json
 *.db
 *.db-wal
 *.db-shm
+*.npz
 .agent_sleep/
+

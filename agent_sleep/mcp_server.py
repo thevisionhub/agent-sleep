@@ -121,10 +121,17 @@ def agent_sleep_recall(
     return {
         "query": query,
         "scope": resolved_scope,
-        "has_memories": bool(structured["memories"] or structured["rules"]),
+        "has_memories": bool(
+            structured["memories"]
+            or structured["rules"]
+            or structured.get("causal_hypotheses")
+        ),
         "context_prompt": formatted_prompt,
         "memories": structured["memories"],
         "rules": structured["rules"],
+        "causal_hypotheses": structured.get("causal_hypotheses", []),
+        "operational_policy": structured.get("operational_policy", {}),
+        "cluster_insight": structured.get("cluster_insight"),
     }
 
 

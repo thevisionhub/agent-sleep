@@ -189,7 +189,7 @@ class SleepConsolidator:
             logger.warning(f"Rule promotion failed (non-fatal): {e}")
 
         # ── Stage 5: Error Analysis (Causal hypotheses) ───────────────
-        self._emit("ERROR_ANALYSIS", "Analyzing failure episodes", 70)
+        self._emit("ERROR_ANALYSIS", "Analyzing failure episodes for causal mechanisms", 70)
         beliefs_revised = 0
         for ep in prioritized:
             outcome = (ep.get("outcome") or "").strip().lower()
@@ -199,9 +199,15 @@ class SleepConsolidator:
                 from agent_sleep.storage.db import save_causal_hypothesis
                 action = str(ep.get("action") or "Unknown Action")[:200]
                 reason = ep.get("failure_reason") or "unknown failure"
+                goal = ep.get("goal") or "Task Execution"
                 save_causal_hypothesis(
-                    session_id, action, reason, "Failed Execution", 0.8,
-                    scope=ep.get("scope", self.scope), db_path=self.db_path,
+                    session_id=session_id,
+                    action=action,
+                    hypothesis=f"When attempting '{goal[:100]}', action '{action[:80]}' failed due to: {reason[:120]}",
+                    effect=f"Execution Failed: {reason[:80]}",
+                    confidence=0.85,
+                    scope=ep.get("scope", self.scope),
+                    db_path=self.db_path,
                 )
                 beliefs_revised += 1
             except Exception as e:
@@ -212,10 +218,27 @@ class SleepConsolidator:
         self._emit("SELF_REFLECTION", "Updating self-competence model", 80)
         try:
             from agent_sleep.self_model import run_self_reflection
-            reflection_report = run_self_reflection(prioritized)
+            reflection_report = run_self_reflection(prioritized, db_path=self.db_path)
             stats["domains_updated"] = reflection_report["domains_updated"]
         except Exception as e:
             logger.warning(f"Self-reflection failed (non-fatal): {e}")
+
+        # ── Stage 6.5: Concept Hierarchy Clustering ────────────────────
+        try:
+            from agent_sleep.hierarchy import get_hierarchy
+            from agent_sleep.storage.embeddings import embed
+            hierarchy = get_hierarchy(db_path=self.db_path)
+            for ep in prioritized:
+                goal = ep.get("goal") or ""
+                action = ep.get("action") or ""
+                outcome_str = (ep.get("outcome") or "").strip().lower()
+                outcome_val = 1.0 if outcome_str == "success" else 0.0
+                ep_text = f"{goal} {action}"
+                vec = embed(ep_text)
+                hierarchy.add_memory(vec, outcome=outcome_val, example=goal[:80])
+            hierarchy.save()
+        except Exception as e:
+            logger.debug(f"Concept hierarchy clustering skipped: {e}")
 
         # ── Stage 7: Mark episodes as processed ───────────────────────
         self._emit("FINALIZE", "Marking episodes as processed", 90)

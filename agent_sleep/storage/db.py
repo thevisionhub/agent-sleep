@@ -119,6 +119,7 @@ _DDL = [
         confidence          REAL DEFAULT 0.5,
         support_count       INTEGER DEFAULT 1,
         contradiction_count INTEGER DEFAULT 0,
+        embedding           BLOB DEFAULT NULL,
         timestamp           TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """,
@@ -192,6 +193,7 @@ def ensure_db_initialized(db_path: Optional[Path] = None) -> None:
                 ("candidate_rules", "scope", "TEXT NOT NULL DEFAULT 'global'"),
                 ("candidate_rules", "embedding", "BLOB DEFAULT NULL"),
                 ("causal_hypotheses", "scope", "TEXT NOT NULL DEFAULT 'global'"),
+                ("causal_hypotheses", "embedding", "BLOB DEFAULT NULL"),
                 ("skills", "scope", "TEXT NOT NULL DEFAULT 'global'"),
             ]
             for tbl, col, col_def in _migrations:
@@ -576,15 +578,103 @@ def save_causal_hypothesis(
     scope: str = "global",
     db_path: Optional[Path] = None,
 ) -> None:
+    vec = embed(f"{action} {hypothesis} {effect}")
+    vec_blob = serialize_vector(vec)
+
     with _cursor(commit=True, db_path=db_path) as cur:
+        # Check if identical hypothesis exists to increment support count
         cur.execute(
             """
-            INSERT INTO causal_hypotheses
-            (session_id, scope, action, hypothesis, effect, confidence)
-            VALUES (?,?,?,?,?,?)
+            SELECT id, support_count, confidence FROM causal_hypotheses
+            WHERE scope=? AND action=? AND hypothesis=?
             """,
-            (session_id, scope, action[:200], hypothesis, effect, confidence),
+            (scope, action[:200], hypothesis),
         )
+        row = cur.fetchone()
+        if row:
+            cur.execute(
+                """
+                UPDATE causal_hypotheses
+                SET support_count = support_count + 1,
+                    confidence = MIN(0.99, confidence + 0.05),
+                    embedding = COALESCE(?, embedding),
+                    timestamp = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (vec_blob, row["id"]),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO causal_hypotheses
+                (session_id, scope, action, hypothesis, effect, confidence, embedding)
+                VALUES (?,?,?,?,?,?,?)
+                """,
+                (session_id, scope, action[:200], hypothesis, effect, confidence, vec_blob),
+            )
+
+
+def recall_causal_hypotheses(
+    query_text: str,
+    *,
+    top_k: int = 3,
+    scopes: Optional[Sequence[str]] = ("global",),
+    min_confidence: float = 0.4,
+    db_path: Optional[Path] = None,
+) -> List[dict]:
+    """
+    Selectively retrieve causal hypotheses relevant to a given task or action query.
+    Closes the loop between error analysis and future planning.
+    """
+    try:
+        q_vec = embed(query_text)
+    except Exception:
+        q_vec = None
+
+    where_clauses = ["confidence >= ?"]
+    params: list = [min_confidence]
+
+    if scopes:
+        placeholders = ",".join("?" * len(scopes))
+        where_clauses.append(f"scope IN ({placeholders})")
+        params.extend(scopes)
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}"
+
+    with _cursor(db_path=db_path) as cur:
+        cur.execute(
+            f"SELECT id, action, hypothesis, effect, confidence, support_count, embedding FROM causal_hypotheses {where_sql}",
+            params,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+
+    if not rows:
+        return []
+
+    scored = []
+    for r in rows:
+        sim = 0.0
+        if q_vec is not None:
+            vec = deserialize_vector(r.get("embedding"))
+            if vec is None:
+                vec = embed(f"{r['action']} {r['hypothesis']} {r['effect']}")
+            sim = cosine_similarity(q_vec, vec)
+        else:
+            # Fallback keyword match
+            kw = query_text.lower()
+            text = f"{r['action']} {r['hypothesis']} {r['effect']}".lower()
+            if any(word in text for word in kw.split() if len(word) > 3):
+                sim = 0.5
+
+        if sim >= 0.15:
+            score = sim * float(r["confidence"])
+            r_copy = dict(r)
+            r_copy.pop("embedding", None)
+            r_copy["relevance_score"] = round(score, 3)
+            scored.append((score, r_copy))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored[:top_k]]
 
 
 def update_competence(domain: str, accuracy: float, db_path: Optional[Path] = None) -> None:
@@ -600,3 +690,30 @@ def update_competence(domain: str, accuracy: float, db_path: Optional[Path] = No
             """,
             (domain, accuracy, accuracy, accuracy, accuracy),
         )
+
+
+def get_domain_competence(domain: str, db_path: Optional[Path] = None) -> dict:
+    """Retrieve tracked competence metrics for a specific domain."""
+    with _cursor(db_path=db_path) as cur:
+        cur.execute(
+            "SELECT domain, competence, uncertainty, historical_accuracy, last_updated FROM self_competence WHERE domain=?",
+            (domain,),
+        )
+        row = cur.fetchone()
+        if row:
+            return dict(row)
+        return {
+            "domain": domain,
+            "competence": 0.5,
+            "uncertainty": 0.5,
+            "historical_accuracy": 0.5,
+            "last_updated": None,
+        }
+
+
+def get_all_competencies(db_path: Optional[Path] = None) -> Dict[str, float]:
+    """Retrieve all tracked domain competence scores."""
+    with _cursor(db_path=db_path) as cur:
+        cur.execute("SELECT domain, competence FROM self_competence")
+        return {r["domain"]: float(r["competence"]) for r in cur.fetchall()}
+
