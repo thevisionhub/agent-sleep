@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-sleep"
-version = "0.1.1-alpha"
+version = "0.1.2-alpha"
 description = "Episodic -> Sleep Consolidation -> Semantic Memory for AI agents"
 readme = "README.md"
 license = { text = "MIT" }
@@ -65,6 +65,7 @@ include = ["agent_sleep*"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+python_files = ["test_*.py"]
 
 [tool.ruff]
 line-length = 100
