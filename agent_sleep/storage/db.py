@@ -674,23 +674,40 @@ def recall_memories(
 
 def record_memory_utility_feedback(
     memory_ids: Sequence[int],
-    outcome: str,
+    outcome: str = "success",
     was_applied: bool = True,
     is_causal_contributor: bool = False,
+    error_signature: Optional[str] = None,
+    evidence_record: Optional[Dict[str, Any]] = None,
     db_path: Optional[Path] = None,
 ) -> dict:
     """
-    Record whether retrieved memories were applied and what happened afterward.
-    Distinguishes:
-      - Retrieved & Causal Contributor on success: +0.15 utility boost
-      - Retrieved & Applied on success: +0.08 utility boost
-      - Retrieved but unapplied on success: +0.02 nominal boost
-      - Applied and failed with identical error: -0.15 utility penalty (quarantine path)
+    Record whether retrieved memories were applied and evaluate causal outcome attribution.
+    Supports evidence-based causal records:
+      {
+         "retrieved": bool,
+         "shown": bool,
+         "explicitly_referenced": bool,
+         "action_changed": bool,
+         "outcome": "success" | "failure",
+         "error_signature": Optional[str],
+         "causal_confidence": Optional[float]
+      }
     """
     if not memory_ids:
         return {"updated": 0, "quarantined": 0}
 
-    is_success = "success" in outcome.lower()
+    # Extract signals from evidence_record if supplied
+    ev = evidence_record or {}
+    effective_outcome = (ev.get("outcome") or outcome or "").lower()
+    is_success = "success" in effective_outcome
+    err_sig = ev.get("error_signature") or error_signature
+
+    applied = ev.get("action_changed", was_applied) or ev.get("explicitly_referenced", was_applied)
+    referenced = bool(ev.get("explicitly_referenced", False))
+    action_modified = bool(ev.get("action_changed", False))
+    causal_flag = is_causal_contributor or (referenced and action_modified) or (ev.get("causal_confidence", 0.0) >= 0.70)
+
     quarantined = 0
     updated = 0
 
@@ -706,10 +723,15 @@ def record_memory_utility_feedback(
             f_cnt = int(row["failure_count"] or 0)
             status = row["verification_status"] or "observed"
 
-            if was_applied:
+            if applied:
                 if is_success:
-                    # Graded causal attribution
-                    boost = 0.15 if is_causal_contributor else 0.10
+                    # Graded causal attribution based on verifiable evidence criteria
+                    if causal_flag and referenced:
+                        boost = 0.18  # Strong evidence-verified causal contribution
+                    elif causal_flag:
+                        boost = 0.15
+                    else:
+                        boost = 0.10
                     u = min(1.0, u + boost)
                     s_cnt += 1
 
@@ -729,7 +751,8 @@ def record_memory_utility_feedback(
                     elif s_cnt >= 5:
                         status = "repeated"  # Caps at repeated if single source
                 else:
-                    u = max(0.0, u - 0.15)
+                    penalty = 0.20 if err_sig else 0.15
+                    u = max(0.0, u - penalty)
                     f_cnt += 1
                     if f_cnt >= 2 and f_cnt > s_cnt and u <= 0.25:
                         status = "quarantined"
@@ -750,7 +773,7 @@ def record_memory_utility_feedback(
                     last_accessed = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (1 if was_applied else 0, u, s_cnt, f_cnt, status, mid),
+                (1 if applied else 0, u, s_cnt, f_cnt, status, mid),
             )
             updated += 1
 
@@ -946,6 +969,13 @@ def recall_rules(
 
     scored = []
     q_lower = query_text.lower()
+    status_weights = {
+        "VERIFIED": 1.20,
+        "SPECIALIZED": 1.15,
+        "CANDIDATE": 1.00,
+        "OBSERVED": 0.90,
+    }
+
     for r in rows:
         vec = deserialize_vector(r.get("embedding"))
         if vec is None:
@@ -959,12 +989,19 @@ def recall_rules(
         if exc and any(token in q_lower for token in exc.split() if len(token) > 3):
             continue
 
-        # Condition specificity boost
-        specificity_boost = 1.0
-        if cond and any(token in q_lower for token in cond.split() if len(token) > 3):
-            specificity_boost = 1.25
+        # Specificity Hierarchy: Specific Verified > General Verified > Specific Candidate > General Candidate
+        status = r.get("status", "CANDIDATE")
+        s_weight = status_weights.get(status, 1.00)
 
-        score = sim * float(r["confidence"]) * specificity_boost
+        if cond:
+            if any(token in q_lower for token in cond.split() if len(token) > 3):
+                specificity_boost = 1.35  # Explicit condition match
+            else:
+                specificity_boost = 0.85  # Specialized for a different condition
+        else:
+            specificity_boost = 1.00  # General default rule
+
+        score = sim * float(r["confidence"]) * s_weight * specificity_boost
         if sim > 0.20:
             text = r["belief"]
             if r.get("condition"):

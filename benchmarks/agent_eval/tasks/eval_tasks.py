@@ -1,5 +1,5 @@
 """
-Standardized Evaluation Tasks for agent-sleep Agent Evaluation Suite.
+Standardized 8-Task Evaluation Suite for agent-sleep Agent Evaluation.
 """
 from dataclasses import dataclass
 from typing import Dict, List
@@ -131,7 +131,7 @@ EVAL_TASKS: List[EvalTask] = [
     ),
     EvalTask(
         task_id=4,
-        name="Concurrent SQLite Settlement (Repeat Domain)",
+        name="Concurrent SQLite Settlement (Transfer SQL)",
         domain="SQL",
         trap_category="sqlite_busy_lock",
         description=(
@@ -168,6 +168,135 @@ EVAL_TASKS: List[EvalTask] = [
             "    for t in threads: t.start()\n"
             "    for t in threads: t.join()\n"
             "    assert len(errors) == 0, f'Settlement concurrency errors: {errors}'\n"
+        ),
+        expected_failure_pattern="OperationalError: database is locked",
+    ),
+    EvalTask(
+        task_id=5,
+        name="Async Event Batch Processor (Transfer Python)",
+        domain="Python",
+        trap_category="async_generator_syntax",
+        description=(
+            "Implement async event batch processor in batch_processor.py "
+            "iterating over an async generator stream."
+        ),
+        initial_files={
+            "batch_processor.py": (
+                "import asyncio\n\n"
+                "async def event_generator():\n"
+                "    for i in range(4):\n"
+                "        await asyncio.sleep(0.001)\n"
+                "        yield f'event_{i}'\n\n"
+                "def process_events():\n"
+                "    res = []\n"
+                "    for ev in event_generator():\n"
+                "        res.append(ev)\n"
+                "    return res\n"
+            )
+        },
+        test_code=(
+            "import asyncio\n"
+            "from batch_processor import process_events\n\n"
+            "def test_batch():\n"
+            "    res = asyncio.run(process_events()) if asyncio.iscoroutinefunction(process_events) else process_events()\n"
+            "    assert res == ['event_0', 'event_1', 'event_2', 'event_3']\n"
+        ),
+        expected_failure_pattern="TypeError: 'async_generator' object is not iterable",
+    ),
+    EvalTask(
+        task_id=6,
+        name="HTTP Webhook Dispatcher with Retry (Transfer API)",
+        domain="API_calls",
+        trap_category="missing_rate_limit_retry",
+        description=(
+            "Implement webhook dispatcher in dispatcher.py with 429 rate limit backoff retry."
+        ),
+        initial_files={
+            "dispatcher.py": (
+                "class WebhookError(Exception):\n"
+                "    def __init__(self, code, headers):\n"
+                "        self.status_code = code\n"
+                "        self.headers = headers\n\n"
+                "def dispatch_webhook(api_fn):\n"
+                "    return api_fn()\n"
+            )
+        },
+        test_code=(
+            "from dispatcher import dispatch_webhook, WebhookError\n\n"
+            "def test_dispatcher():\n"
+            "    calls = 0\n"
+            "    def mock_hook():\n"
+            "        nonlocal calls\n"
+            "        calls += 1\n"
+            "        if calls == 1:\n"
+            "            raise WebhookError(429, {'Retry-After': '0.01'})\n"
+            "        return {'dispatched': True}\n"
+            "    res = dispatch_webhook(mock_hook)\n"
+            "    assert res == {'dispatched': True}\n"
+            "    assert calls == 2\n"
+        ),
+        expected_failure_pattern="WebhookError: 429",
+    ),
+    EvalTask(
+        task_id=7,
+        name="PostgreSQL Connection Pool Init (Novel Domain)",
+        domain="SQL",
+        trap_category="clean_execution",
+        description=(
+            "Initialize clean database pool manager without concurrency bugs."
+        ),
+        initial_files={
+            "pool_manager.py": (
+                "def create_pool(max_conn: int = 5):\n"
+                "    return {'max_conn': max_conn, 'active': 0}\n"
+            )
+        },
+        test_code=(
+            "from pool_manager import create_pool\n\n"
+            "def test_pool():\n"
+            "    p = create_pool(10)\n"
+            "    assert p['max_conn'] == 10\n"
+        ),
+        expected_failure_pattern="",
+    ),
+    EvalTask(
+        task_id=8,
+        name="SQLite In-Memory Fast Cache (Contextual Exception)",
+        domain="SQL",
+        trap_category="sqlite_busy_lock",
+        description=(
+            "Configure thread-safe SQLite balance cache in cache.py with WAL mode and busy timeout."
+        ),
+        initial_files={
+            "cache.py": (
+                "import sqlite3, threading, time\n\n"
+                "def update_cache(db_path: str, worker_id: int, errors: list):\n"
+                "    try:\n"
+                "        conn = sqlite3.connect(db_path, timeout=0.001)\n"
+                "        for j in range(10):\n"
+                "            conn.execute('UPDATE cache SET hits=hits+1 WHERE id=?', (worker_id * 10 + j + 1,))\n"
+                "            time.sleep(0.001)\n"
+                "            conn.commit()\n"
+                "        conn.close()\n"
+                "    except Exception as e:\n"
+                "        errors.append(f'{type(e).__name__}: {e}')\n"
+            )
+        },
+        test_code=(
+            "import sqlite3, threading\n"
+            "from cache import update_cache\n\n"
+            "def test_cache(tmp_path):\n"
+            "    db_file = str(tmp_path / 'cache.db')\n"
+            "    c = sqlite3.connect(db_file)\n"
+            "    c.execute('CREATE TABLE cache (id INTEGER PRIMARY KEY, hits INT)')\n"
+            "    c.executemany('INSERT INTO cache VALUES (?, 0)', [(i+1,) for i in range(40)])\n"
+            "    c.commit()\n"
+            "    c.close()\n\n"
+            "    errors = []\n"
+            "    threads = [threading.Thread(target=update_cache, args=(db_file, i, errors)) for i in range(4)]\n"
+            "    for t in threads: t.start()\n"
+            "    for t in threads: t.join()\n"
+            "    assert len(errors) == 0, f'Cache errors: {errors}'\n"
         ),
         expected_failure_pattern="OperationalError: database is locked",
     ),

@@ -297,14 +297,17 @@ def agent_sleep_status(
     name="agent_sleep_feedback",
     description=(
         "Record outcome attribution feedback for retrieved memories. "
-        "Allows the cognitive memory system to update utility scores and promote or quarantine memories."
+        "Allows the cognitive memory system to update utility scores and promote or quarantine memories "
+        "based on verifiable evidence records or outcome booleans."
     ),
 )
 def agent_sleep_feedback(
     memory_ids: List[int],
-    outcome: str,
+    outcome: str = "success",
     was_applied: bool = True,
     is_causal_contributor: bool = False,
+    error_signature: Optional[str] = None,
+    evidence_record: Optional[Dict[str, Any]] = None,
     db_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -315,6 +318,8 @@ def agent_sleep_feedback(
     - outcome: 'success', 'failure', or error description.
     - was_applied: Whether the memories were actively enacted in the task (default: True).
     - is_causal_contributor: Whether the memory was the primary cause of task resolution (default: False).
+    - error_signature: Optional error pattern when execution failed despite memory application.
+    - evidence_record: Optional structured evidence dict with fields (retrieved, explicitly_referenced, action_changed, outcome, causal_confidence).
     - db_path: Path to SQLite database. Defaults to .agent_sleep/memory.db in cwd.
     """
     from agent_sleep.storage.db import record_memory_utility_feedback
@@ -324,6 +329,8 @@ def agent_sleep_feedback(
         outcome=outcome,
         was_applied=was_applied,
         is_causal_contributor=is_causal_contributor,
+        error_signature=error_signature,
+        evidence_record=evidence_record,
         db_path=resolved_db,
     )
     return _sanitize_mcp_output(report)

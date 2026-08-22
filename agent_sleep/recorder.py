@@ -124,19 +124,24 @@ class AgentMemory:
     def record_memory_feedback(
         self,
         memory_ids: Sequence[int],
-        outcome: str,
+        outcome: str = "success",
         was_applied: bool = True,
         is_causal_contributor: bool = False,
+        error_signature: Optional[str] = None,
+        evidence_record: Optional[Dict[str, Any]] = None,
     ) -> dict:
         """
         Record whether retrieved memories were applied and what happened afterward.
         Closes the utility feedback loop so the memory system learns which knowledge helps.
+        Supports structured evidence_record for verifiable causal attribution.
         """
         return record_memory_utility_feedback(
             memory_ids=memory_ids,
             outcome=outcome,
             was_applied=was_applied,
             is_causal_contributor=is_causal_contributor,
+            error_signature=error_signature,
+            evidence_record=evidence_record,
             db_path=self.db_path,
         )
 

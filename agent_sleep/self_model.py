@@ -33,13 +33,28 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
 _EMA_ALPHA = 0.2  # exponential moving average decay
 
 
-def infer_domain(text: str) -> str:
-    """Infer a task domain from its text description (keyword heuristic)."""
+def infer_domains_multi(text: str) -> Dict[str, float]:
+    """
+    Infer multi-domain affinity distribution from text description using keyword matches
+    and semantic token presence.
+    Returns mapping of domain -> affinity score (0.0 to 1.0).
+    """
     text_lower = text.lower()
+    affinities: Dict[str, float] = {}
     for domain, keywords in _DOMAIN_KEYWORDS.items():
-        if any(kw in text_lower for kw in keywords):
-            return domain
-    return "General"
+        matches = sum(1 for kw in keywords if kw in text_lower)
+        if matches > 0:
+            score = min(1.0, 0.4 + 0.2 * matches)
+            affinities[domain] = score
+    if not affinities:
+        affinities["General"] = 1.0
+    return affinities
+
+
+def infer_domain(text: str) -> str:
+    """Infer the primary task domain from its text description."""
+    affinities = infer_domains_multi(text)
+    return max(affinities.items(), key=lambda x: x[1])[0]
 
 
 class SelfModel:
@@ -192,6 +207,7 @@ class SelfModel:
 def run_self_reflection(episodes: list, scope: str = "global", db_path: Optional[Path] = None) -> dict:
     """
     Process a batch of consolidated episodes to update the self-model.
+    Supports multi-domain affinity updates for composite tasks.
 
     Returns a summary of competence updates.
     """
@@ -206,10 +222,12 @@ def run_self_reflection(episodes: list, scope: str = "global", db_path: Optional
         if outcome not in ("success", "failure"):
             continue
 
-        domain = infer_domain(goal + " " + action)
+        domain_affinities = infer_domains_multi(goal + " " + action)
         success = outcome == "success"
-        new_score = self_model.update(domain, success, scope=ep_scope, db_path=db_path)
-        updates.setdefault(domain, []).append(new_score)
+        for domain, affinity in domain_affinities.items():
+            if affinity >= 0.40:
+                new_score = self_model.update(domain, success, scope=ep_scope, db_path=db_path)
+                updates.setdefault(domain, []).append(new_score)
 
     return {
         "domains_updated": len(updates),

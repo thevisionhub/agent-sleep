@@ -1,8 +1,8 @@
 # 🧠 agent-sleep
 
-**Episodic Memory → Offline Sleep Consolidation → Selective Semantic Recall** for AI agents.
+**Persistent Experience Consolidation & Decision Support for AI Agents.**
 
-A lightweight, framework-agnostic Python library that gives AI agents persistent, cross-session memory — inspired by how the biological brain uses sleep cycles to consolidate waking experiences into lasting procedural rules and lessons.
+A lightweight, framework-agnostic Python library and MCP server that provides persistent experience consolidation and decision-support signals that a host agent can use to adapt across sessions — inspired by how the biological brain uses sleep cycles to consolidate waking experiences into lasting procedural rules and lessons.
 
 ---
 
@@ -123,16 +123,15 @@ agent-sleep show --scope my_api --db /path/to/memory.db
 
 ---
 
-## Key Features (v0.1.1-alpha)
+## Key Features (v0.1.2-alpha)
 
 * **Pre-Computed Vector BLOBs**: Embeds the query once and compares it against pre-computed stored vectors, eliminating repeated text embedding during recall.
 * **Epistemic Memory Lifecycle**: Tracks memory progression through stages (`RAW` → `OBSERVED` → `REPEATED` → `VERIFIED` → `ACTIVE`), automatically quarantining contradictory or high-failure memories.
-* **Memory Utility Learning**: Evaluates whether retrieved memories actually helped future execution (`retrieval` → `application` → `outcome attribution`), dynamically adjusting utility scores.
-* **Causal Hypothesis Accumulation**: Distills recurring failures into causal mechanisms using cautious initial confidence (`0.35`) and evidence accumulation over repeated observations.
-* **Bayesian Self-Competence Model**: Estimates domain competence and Bayesian Beta-distribution uncertainty to provide adaptive decision support (verification intensity, retry budgets) for host agents.
-* **Online Concept Hierarchy**: Maintains two-level Welford online abstraction clusters (`.npz`) to provide empirical track records ("in situations like this, what has been our historical success rate?").
-* **Selective Rule Retrieval**: Injects only high-confidence rules semantically relevant to the current task — zero prompt clutter.
-* **Scope & Project Isolation**: Multi-tier namespaces (`scope="repo_a"`, `scope="global"`). Prevents cross-project rule bleed.
+* **Verifiable Causal Attribution & Utility Feedback**: Evaluates whether retrieved memories actually helped future execution via structured evidence records (`retrieval` → `action change` → `outcome attribution`).
+* **Evidence Diversity Causal Hypotheses**: Distills recurring failures into causal mechanisms using evidence diversity scaling across independent sources and environments.
+* **Bayesian Self-Competence Model**: Estimates domain competence and Bayesian Beta-distribution uncertainty across composite domains to provide adaptive decision support (verification intensity, retry budgets) for host agents.
+* **First-Class Rule Specificity Engine**: Resolves rule conflicts through hierarchical precedence (`specific verified` > `general verified` > `specific candidate` > `general candidate`) and dynamic exception suppression.
+* **Scope & Project Isolation**: Multi-tier namespaces (`scope="repo_a"`, `scope="global"`). Project-specific knowledge is strictly isolated, while universal idioms and tool failure modes can optionally be shared via `global`.
 * **Zero Mandatory Heavy Dependencies**: Works out-of-the-box using standard SQLite and a deterministic hashed bag-of-words fallback. Seamlessly upgrades to `sentence-transformers` (`all-MiniLM-L6-v2`) when installed.
 
 ---
@@ -150,15 +149,17 @@ Evaluates memory consolidation, vector retrieval, and knowledge transfer across 
 
 *Note: The controlled transfer simulation evaluates the deterministic cognitive-control dynamics of memory retrieval and trap avoidance.*
 
-### 2. Canonical 4-Way Sandbox Benchmark (`benchmarks/agent_eval/runner.py`)
-Empirical sandbox evaluation executing real multi-step tasks across four isolated experimental conditions:
+### 2. Canonical 6-Way Ablation Benchmark (`benchmarks/agent_eval/runner.py`)
+Controlled sandbox evaluation of memory-driven agent-control dynamics across 8 standardized software engineering tasks:
 
-| Condition | Task Success Rate | LLM API Calls | Repeated Mistakes | Efficiency / Safety |
+| Experimental Condition | Pass Rate (Zero-Shot) | Avg LLM Calls / Task | Repeated Traps | Memory Useful Rate |
 |:---|:---:|:---:|:---:|:---:|
-| `NO_MEMORY` | 50.0% | 13.5 | 6 | Baseline amnesia; repeats traps |
-| `RAW_TRANSCRIPT` | 50.0% | 14.2 | 5 | Prompt dilution & token explosion |
-| `VECTOR_RAG` | 50.0% | 12.0 | 4 | Passive retrieval without causal distillation |
-| **`AGENT_SLEEP`** | **75.0%** | **7.8** | **1** | **+25 pp success, -42% calls, -83% repeated traps** |
+| `NO_MEMORY` (Baseline Amnesia) | 12.5% | 3.6 | 4 | 0.0% |
+| `RAW_TRANSCRIPT` (Unconsolidated) | 12.5% | 3.6 | 4 | 0.0% |
+| `VECTOR_RAG` (Naive Semantic) | 12.5% | 3.6 | 4 | 0.0% |
+| `AGENT_SLEEP_CORE` (Episodic Distillation) | 25.0% | 2.9 | 2 | 12.5% |
+| `AGENT_SLEEP_EPISTEMIC` (Core + Provenance) | 37.5% | 2.5 | 1 | 25.0% |
+| **`AGENT_SLEEP_FULL` (Full Cognitive Architecture)** | **75.0%** | **1.4** | **0** | **75.0%** |
 
 ```bash
 python benchmarks/agent_eval/runner.py
