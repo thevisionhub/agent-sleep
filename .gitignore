@@ -12,6 +12,7 @@ build/
 .ruff_cache/
 agent_sleep/data/
 benchmarks/results.json
+benchmarks/live_eval_summary.json
 *.db
 *.db-wal
 *.db-shm

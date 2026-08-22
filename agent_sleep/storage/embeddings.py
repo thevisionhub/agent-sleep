@@ -28,11 +28,11 @@ def _load_model() -> None:
     try:
         from sentence_transformers import SentenceTransformer
         try:
-            _model = SentenceTransformer("all-MiniLM-L6-v2", local_files_only=True)
+            _model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu", local_files_only=True)
         except Exception:
-            _model = SentenceTransformer("all-MiniLM-L6-v2")
+            _model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")
         _BACKEND = "sentence_transformers"
-        logger.info("agent-sleep: initialized all-MiniLM-L6-v2 embedding model")
+        logger.debug("agent-sleep: initialized all-MiniLM-L6-v2 embedding model (CPU)")
     except ImportError:
         _BACKEND = "hashed_bow"
         logger.info("agent-sleep: sentence-transformers not installed; using deterministic hashed bag-of-words fallback")

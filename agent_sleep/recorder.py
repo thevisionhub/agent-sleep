@@ -143,9 +143,8 @@ class AgentMemory:
         Selectively injects high-confidence, operational context to actively guide
         agent decision making, tool parameters, and verification intensity.
         """
-        active_scopes = list(scopes) if scopes else (
-            [self.scope] if self.scope == "global" else [self.scope, "global"]
-        )
+        domain = infer_domain(task)
+        active_scopes = list(scopes) if scopes else list({self.scope, domain, "global"})
 
         memories = recall_memories(
             task,
@@ -169,7 +168,6 @@ class AgentMemory:
             db_path=self.db_path,
         ) if include_causal else []
 
-        domain = infer_domain(task)
         self_model = SelfModel(db_path=self.db_path)
         policy = self_model.get_behavioral_policy(domain, db_path=self.db_path) if include_competence else None
 
@@ -236,14 +234,12 @@ class AgentMemory:
         scopes: Optional[Sequence[str]] = None,
     ) -> dict:
         """Return structured dictionary for custom prompt formatting and programmatic agent control."""
-        active_scopes = list(scopes) if scopes else (
-            [self.scope] if self.scope == "global" else [self.scope, "global"]
-        )
+        domain = infer_domain(task)
+        active_scopes = list(scopes) if scopes else list({self.scope, domain, "global"})
         memories = recall_memories(task, top_k=top_k, scopes=active_scopes, db_path=self.db_path)
         rules = recall_rules(task, top_k=top_k_rules, scopes=active_scopes, db_path=self.db_path)
         causal = recall_causal_hypotheses(task, top_k=3, scopes=active_scopes, db_path=self.db_path)
 
-        domain = infer_domain(task)
         self_model = SelfModel(db_path=self.db_path)
         policy = self_model.get_behavioral_policy(domain, db_path=self.db_path)
 
