@@ -168,14 +168,16 @@ _DDL = [
     """,
     """
     CREATE TABLE IF NOT EXISTS self_competence (
-        domain              TEXT PRIMARY KEY,
+        scope               TEXT NOT NULL DEFAULT 'global',
+        domain              TEXT NOT NULL,
         competence          REAL DEFAULT 0.5,
         uncertainty         REAL DEFAULT 0.5,
         historical_accuracy REAL DEFAULT 0.5,
         success_count       INTEGER DEFAULT 1,
         failure_count       INTEGER DEFAULT 1,
         total_episodes      INTEGER DEFAULT 0,
-        last_updated        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        last_updated        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (scope, domain)
     )
     """,
 ]
@@ -223,6 +225,7 @@ def ensure_db_initialized(db_path: Optional[Path] = None) -> None:
                 ("causal_hypotheses", "provenance", "TEXT DEFAULT '{}'"),
                 ("causal_hypotheses", "embedding", "BLOB DEFAULT NULL"),
                 ("skills", "scope", "TEXT NOT NULL DEFAULT 'global'"),
+                ("self_competence", "scope", "TEXT NOT NULL DEFAULT 'global'"),
                 ("self_competence", "success_count", "INTEGER DEFAULT 1"),
                 ("self_competence", "failure_count", "INTEGER DEFAULT 1"),
                 ("self_competence", "total_episodes", "INTEGER DEFAULT 0"),
@@ -350,16 +353,56 @@ def mark_episodes_processed(episode_ids: List[int], db_path: Optional[Path] = No
         )
 
 
-def get_stale_episodes(max_age_days: float = 14.0, db_path: Optional[Path] = None) -> List[dict]:
+def get_stale_episodes(
+    max_age_days: float = 14.0,
+    scope: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> List[dict]:
+    """
+    Fetch processed episodes older than max_age_days.
+    Strictly isolated by scope when scope is provided to prevent cross-scope compression leaks.
+    """
+    with _cursor(db_path=db_path) as cur:
+        if scope is not None:
+            cur.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE processed_by_sleep=1
+                  AND timestamp < datetime('now', ?)
+                  AND (scope = ? OR scope = 'global')
+                ORDER BY id
+                """,
+                (f"-{max_age_days} days", scope),
+            )
+        else:
+            cur.execute(
+                """
+                SELECT * FROM execution_episodes
+                WHERE processed_by_sleep=1
+                  AND timestamp < datetime('now', ?)
+                ORDER BY id
+                """,
+                (f"-{max_age_days} days",),
+            )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def get_historical_failures(
+    scope: str = "global",
+    limit: int = 50,
+    db_path: Optional[Path] = None,
+) -> List[dict]:
+    """Retrieve recent failure episodes for cross-session behavioral pattern accumulation."""
     with _cursor(db_path=db_path) as cur:
         cur.execute(
             """
             SELECT * FROM execution_episodes
-            WHERE processed_by_sleep=1
-              AND timestamp < datetime('now', ?)
-            ORDER BY id
+            WHERE outcome IN ('failure', 'rejected')
+              AND episode_kind != 'task_verdict'
+              AND (scope = ? OR scope = 'global')
+            ORDER BY id DESC LIMIT ?
             """,
-            (f"-{max_age_days} days",),
+            (scope, limit),
         )
         return [dict(r) for r in cur.fetchall()]
 
@@ -514,6 +557,7 @@ def save_semantic_memory(
                 """,
                 (value, importance, new_conf, new_u, new_evidence, new_status, vec_blob, json.dumps(merged_prov), source, row["id"]),
             )
+            return row["id"]
         else:
             init_prov = _merge_provenance({}, incoming_prov, new_source=source)
             cur.execute(
@@ -525,6 +569,7 @@ def save_semantic_memory(
                 """,
                 (scope, memory_type, fact, value, importance, confidence, utility_score, verification_status, vec_blob, json.dumps(init_prov), source),
             )
+            return cur.lastrowid
 
 
 def recall_memories(
@@ -651,7 +696,7 @@ def record_memory_utility_feedback(
 
     with _cursor(commit=True, db_path=db_path) as cur:
         for mid in memory_ids:
-            cur.execute("SELECT id, utility_score, success_count, failure_count, verification_status FROM semantic_memories WHERE id=?", (mid,))
+            cur.execute("SELECT id, utility_score, success_count, failure_count, verification_status, provenance FROM semantic_memories WHERE id=?", (mid,))
             row = cur.fetchone()
             if not row:
                 continue
@@ -667,10 +712,22 @@ def record_memory_utility_feedback(
                     boost = 0.15 if is_causal_contributor else 0.10
                     u = min(1.0, u + boost)
                     s_cnt += 1
+
+                    # Epistemic safety: Require multi-source provenance / evidence before promotion to 'verified'
+                    prov = {}
+                    if row["provenance"]:
+                        try:
+                            prov = json.loads(row["provenance"])
+                        except Exception:
+                            prov = {}
+                    distinct_sources = prov.get("distinct_sources_count", 1)
+
                     if status == "observed" and s_cnt >= 2:
                         status = "repeated"
-                    elif s_cnt >= 5:
+                    elif s_cnt >= 5 and distinct_sources >= 2 and u >= 0.75:
                         status = "verified"
+                    elif s_cnt >= 5:
+                        status = "repeated"  # Caps at repeated if single source
                 else:
                     u = max(0.0, u - 0.15)
                     f_cnt += 1
@@ -737,8 +794,9 @@ def decay_stale_memories(
 
 
 def _recall_keyword(query_text: str, *, top_k: int, scopes, memory_types, db_path) -> List[dict]:
+    """Fallback keyword recall adhering to the same epistemic quarantine and quality ranking policy."""
     kw = query_text.lower()
-    where_clauses = []
+    where_clauses = ["verification_status NOT IN ('quarantined', 'expired')"]
     params: list = []
 
     if scopes:
@@ -751,19 +809,32 @@ def _recall_keyword(query_text: str, *, top_k: int, scopes, memory_types, db_pat
         where_clauses.append(f"memory_type IN ({placeholders})")
         params.extend(memory_types)
 
-    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    where_sql = f"WHERE {' AND '.join(where_clauses)}"
 
     with _cursor(db_path=db_path) as cur:
         cur.execute(f"SELECT * FROM semantic_memories {where_sql}", params)
         rows = [dict(r) for r in cur.fetchall()]
 
-    matches = []
+    trust_weights = {"verified": 1.00, "repeated": 0.75, "observed": 0.50, "raw": 0.20}
+    scored = []
     for r in rows:
-        if kw in (r["fact"] + " " + r["value"]).lower():
+        text = (r["fact"] + " " + r["value"]).lower()
+        if kw in text or any(term in text for term in kw.split() if len(term) > 3):
+            status = (r.get("verification_status") or "observed").lower()
+            trust = trust_weights.get(status, 0.50)
+            utility = max(0.10, min(1.0, float(r.get("utility_score") or 0.50)))
+            importance = float(r.get("importance") or 0.70)
+            conf = float(r.get("confidence") or 0.80)
+            quality_factor = 0.20 + 0.50 * trust + 0.15 * utility + 0.10 * importance + 0.05 * conf
+            score = 0.50 * quality_factor
             r_copy = dict(r)
             r_copy.pop("embedding", None)
-            matches.append(r_copy)
-    return matches[:top_k]
+            r_copy["relevance_score"] = round(score, 3)
+            r_copy["quality_factor"] = round(quality_factor, 3)
+            scored.append((score, r_copy))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [r for _, r in scored[:top_k]]
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +918,9 @@ def recall_rules(
 ) -> List[str]:
     """
     Selectively retrieve only the rules most semantically relevant to query_text.
-    Includes contextual conditions and exceptions when present.
+    Applies contextual condition matching and exception suppression:
+      - Rules whose exceptions match query terms are suppressed.
+      - Rules whose explicit conditions match query terms receive a specificity boost.
     """
     try:
         q_vec = embed(query_text)
@@ -872,14 +945,27 @@ def recall_rules(
         return []
 
     scored = []
+    q_lower = query_text.lower()
     for r in rows:
         vec = deserialize_vector(r.get("embedding"))
         if vec is None:
             vec = embed(f"{r['belief']} {r.get('condition','')} {r.get('exception','')}")
         sim = cosine_similarity(q_vec, vec)
-        # Score combining relevance and rule confidence
-        score = sim * float(r["confidence"])
-        if sim > 0.25:  # Relevance threshold
+
+        cond = (r.get("condition") or "").strip().lower()
+        exc = (r.get("exception") or "").strip().lower()
+
+        # Exception suppression: if query matches explicit exception, suppress rule
+        if exc and any(token in q_lower for token in exc.split() if len(token) > 3):
+            continue
+
+        # Condition specificity boost
+        specificity_boost = 1.0
+        if cond and any(token in q_lower for token in cond.split() if len(token) > 3):
+            specificity_boost = 1.25
+
+        score = sim * float(r["confidence"]) * specificity_boost
+        if sim > 0.20:
             text = r["belief"]
             if r.get("condition"):
                 text += f" [Applies: {r['condition']}]"
@@ -934,7 +1020,8 @@ def save_causal_hypothesis(
     """
     Save or update a causal hypothesis with provenance diversity and evidence accumulation.
     Initial observation starts with cautious confidence (0.35).
-    Subsequent observations increment support_count and scale confidence with independent sources.
+    Subsequent observations scale confidence with independent sources/environments.
+    Single-source repetitions have diminishing returns (capped at 0.65).
     """
     vec = embed(f"{action} {hypothesis} {effect} {condition} {exception}")
     vec_blob = serialize_vector(vec)
@@ -958,8 +1045,19 @@ def save_causal_hypothesis(
                     old_prov = {}
 
             merged_prov = _merge_provenance(old_prov, incoming_prov, new_session=session_id)
+            distinct_sources = merged_prov.get("distinct_sources_count", 1)
+            distinct_sessions = merged_prov.get("distinct_sessions_count", 1)
+            distinct_envs = merged_prov.get("distinct_environments_count", 1)
             new_support = int(row["support_count"] or 1) + 1
-            new_conf = min(0.95, 0.35 + 0.15 * (new_support - 1))
+
+            # Diversity-weighted confidence scaling:
+            # Independent multi-source or multi-environment evidence allows scaling up to 0.95.
+            # Single-source / single-environment repetitions have diminishing returns (strictly capped at 0.65).
+            if distinct_sources >= 2 or distinct_envs >= 2:
+                diversity_factor = min(3, distinct_sources + (1 if distinct_envs > 1 else 0))
+                new_conf = round(min(0.95, 0.35 + 0.15 * (diversity_factor - 1) + 0.05 * min(4, new_support - 1)), 2)
+            else:
+                new_conf = round(min(0.65, 0.35 + 0.15 * min(2, new_support - 1)), 2)
 
             cur.execute(
                 """
@@ -1055,11 +1153,12 @@ def update_competence(
     competence: float,
     historical_accuracy: Optional[float] = None,
     success: Optional[bool] = None,
+    scope: str = "global",
     db_path: Optional[Path] = None,
 ) -> None:
     """
     Persist domain competence computed by SelfModel.
-    Stores the exact smoothed competence without double-smoothing in SQL.
+    Stores the exact smoothed competence isolated by project scope.
     Computes Bayesian Beta uncertainty based on observation counts.
     """
     acc = historical_accuracy if historical_accuracy is not None else competence
@@ -1067,7 +1166,7 @@ def update_competence(
     f_inc = 1 if success is False else 0
 
     with _cursor(commit=True, db_path=db_path) as cur:
-        cur.execute("SELECT success_count, failure_count, total_episodes FROM self_competence WHERE domain=?", (domain,))
+        cur.execute("SELECT success_count, failure_count, total_episodes FROM self_competence WHERE scope=? AND domain=?", (scope, domain))
         row = cur.fetchone()
         if row:
             s_cnt = int(row["success_count"] or 1) + s_inc
@@ -1091,9 +1190,9 @@ def update_competence(
         cur.execute(
             """
             INSERT INTO self_competence 
-                (domain, competence, uncertainty, historical_accuracy, success_count, failure_count, total_episodes, last_updated)
-            VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-            ON CONFLICT(domain) DO UPDATE SET
+                (scope, domain, competence, uncertainty, historical_accuracy, success_count, failure_count, total_episodes, last_updated)
+            VALUES (?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+            ON CONFLICT(scope, domain) DO UPDATE SET
                 competence=excluded.competence,
                 uncertainty=excluded.uncertainty,
                 historical_accuracy=excluded.historical_accuracy,
@@ -1102,21 +1201,29 @@ def update_competence(
                 total_episodes=excluded.total_episodes,
                 last_updated=CURRENT_TIMESTAMP
             """,
-            (domain, competence, uncertainty, acc, s_cnt, f_cnt, tot),
+            (scope, domain, competence, uncertainty, acc, s_cnt, f_cnt, tot),
         )
 
 
-def get_domain_competence(domain: str, db_path: Optional[Path] = None) -> dict:
-    """Retrieve tracked competence metrics for a specific domain."""
+def get_domain_competence(domain: str, scope: Optional[str] = "global", db_path: Optional[Path] = None) -> dict:
+    """Retrieve tracked competence metrics for a specific domain within a scope."""
+    target_scope = scope or "global"
     with _cursor(db_path=db_path) as cur:
         cur.execute(
-            "SELECT domain, competence, uncertainty, historical_accuracy, success_count, failure_count, total_episodes, last_updated FROM self_competence WHERE domain=?",
-            (domain,),
+            "SELECT scope, domain, competence, uncertainty, historical_accuracy, success_count, failure_count, total_episodes, last_updated FROM self_competence WHERE scope=? AND domain=?",
+            (target_scope, domain),
         )
         row = cur.fetchone()
+        if not row and target_scope != "global":
+            cur.execute(
+                "SELECT scope, domain, competence, uncertainty, historical_accuracy, success_count, failure_count, total_episodes, last_updated FROM self_competence WHERE scope='global' AND domain=?",
+                (domain,),
+            )
+            row = cur.fetchone()
         if row:
             return dict(row)
         return {
+            "scope": target_scope,
             "domain": domain,
             "competence": 0.5,
             "uncertainty": 0.5,
@@ -1128,9 +1235,10 @@ def get_domain_competence(domain: str, db_path: Optional[Path] = None) -> dict:
         }
 
 
-def get_all_competencies(db_path: Optional[Path] = None) -> Dict[str, float]:
-    """Retrieve all tracked domain competence scores."""
+def get_all_competencies(scope: Optional[str] = "global", db_path: Optional[Path] = None) -> Dict[str, float]:
+    """Retrieve all tracked domain competence scores for a scope."""
+    target_scope = scope or "global"
     with _cursor(db_path=db_path) as cur:
-        cur.execute("SELECT domain, competence FROM self_competence")
+        cur.execute("SELECT domain, competence FROM self_competence WHERE scope IN (?, 'global')", (target_scope,))
         return {r["domain"]: float(r["competence"]) for r in cur.fetchall()}
 

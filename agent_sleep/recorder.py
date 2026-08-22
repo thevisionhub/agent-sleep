@@ -188,8 +188,8 @@ class AgentMemory:
             db_path=self.db_path,
         ) if include_causal else []
 
-        self_model = SelfModel(db_path=self.db_path)
-        policy = self_model.get_behavioral_policy(domain, db_path=self.db_path) if include_competence else None
+        self_model = SelfModel(scope=self.scope, db_path=self.db_path)
+        policy = self_model.get_behavioral_policy(domain, scope=self.scope, db_path=self.db_path) if include_competence else None
 
         cluster_info = None
         if include_cluster:
@@ -291,8 +291,8 @@ class AgentMemory:
             subsystem_status["causal"] = f"FAILED: {e}"
 
         try:
-            self_model = SelfModel(db_path=self.db_path)
-            policy = self_model.get_behavioral_policy(domain, db_path=self.db_path)
+            self_model = SelfModel(scope=self.scope, db_path=self.db_path)
+            policy = self_model.get_behavioral_policy(domain, scope=self.scope, db_path=self.db_path)
             subsystem_status["self_model"] = "SUCCESS"
         except Exception as e:
             policy = {"competence": 0.5, "uncertainty": 0.5, "level": "MODERATE", "directive": "Standard execution."}

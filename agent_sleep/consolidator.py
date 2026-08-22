@@ -115,7 +115,7 @@ class SleepConsolidator:
             from agent_sleep.episodic import compress_stale_episodes
             def _get_stale(max_age_days):
                 from agent_sleep.storage.db import get_stale_episodes
-                return get_stale_episodes(max_age_days=max_age_days, db_path=self.db_path)
+                return get_stale_episodes(max_age_days=max_age_days, scope=self.scope, db_path=self.db_path)
             def _del_eps(ids):
                 from agent_sleep.storage.db import delete_episodes
                 return delete_episodes(ids, db_path=self.db_path)
@@ -208,6 +208,7 @@ class SleepConsolidator:
         self._emit("RULE_PROMOTION", "Promoting behavioral rules from repeated failures", 60)
         try:
             from agent_sleep.beliefs import BeliefSystem, promote_candidate_rules
+            from agent_sleep.storage.db import get_historical_failures
             def _add_rule(belief, conf=0.5, scope="global"):
                 from agent_sleep.storage.db import add_candidate_rule
                 return add_candidate_rule(belief, confidence=conf, scope=scope, db_path=self.db_path)
@@ -216,8 +217,10 @@ class SleepConsolidator:
                 return get_active_rules(scopes=scopes, db_path=self.db_path)
 
             belief_system = BeliefSystem(add_rule_fn=_add_rule, get_rules_fn=_get_rules, scope=self.scope)
+            hist_failures = get_historical_failures(scope=self.scope, db_path=self.db_path)
             rule_report = await promote_candidate_rules(
                 prioritized,
+                historical_episodes=hist_failures,
                 belief_system=belief_system,
                 llm_fn=self.llm_fn,
                 scope=self.scope,
@@ -268,7 +271,7 @@ class SleepConsolidator:
         self._emit("SELF_REFLECTION", "Updating self-competence model", 80)
         try:
             from agent_sleep.self_model import run_self_reflection
-            reflection_report = run_self_reflection(prioritized, db_path=self.db_path)
+            reflection_report = run_self_reflection(prioritized, scope=self.scope, db_path=self.db_path)
             stats["domains_updated"] = reflection_report["domains_updated"]
             stage_status["self_reflection"] = "SUCCESS"
         except Exception as e:

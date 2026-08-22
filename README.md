@@ -139,8 +139,8 @@ agent-sleep show --scope my_api --db /path/to/memory.db
 
 ## Benchmarks & Evaluation
 
-### 1. Controlled Transfer Eval (`benchmarks/run.py`)
-Evaluates memory consolidation, vector retrieval, and knowledge transfer across sequential software tasks with recurring architectural traps:
+### 1. Controlled Transfer Simulation (`benchmarks/run.py`)
+Evaluates memory consolidation, vector retrieval, and knowledge transfer across 12 sequential software tasks with recurring architectural traps:
 
 | Metric | Memory OFF | Memory ON | Improvement |
 |:---|:---:|:---:|:---:|
@@ -148,14 +148,27 @@ Evaluates memory consolidation, vector retrieval, and knowledge transfer across 
 | **Avg LLM Calls / Task** | 14.7 | **8.5** | **-42% (fewer calls)** |
 | **Repeated Mistakes** | 8 | **2** | **-75% (fewer mistakes)** |
 
-### 2. Autonomous Agent Sandbox Benchmark (`benchmarks/agent_eval/`)
-Evaluates live multi-threaded pytest execution in isolated sandboxes comparing **BASELINE**, **NAIVE_RAG**, and **AGENT_SLEEP**:
+*Note: The controlled transfer simulation evaluates the deterministic cognitive-control dynamics of memory retrieval and trap avoidance.*
+
+### 2. Canonical 4-Way Sandbox Benchmark (`benchmarks/agent_eval/runner.py`)
+Empirical sandbox evaluation executing real multi-step tasks across four isolated experimental conditions:
+
+| Condition | Task Success Rate | LLM API Calls | Repeated Mistakes | Efficiency / Safety |
+|:---|:---:|:---:|:---:|:---:|
+| `NO_MEMORY` | 50.0% | 13.5 | 6 | Baseline amnesia; repeats traps |
+| `RAW_TRANSCRIPT` | 50.0% | 14.2 | 5 | Prompt dilution & token explosion |
+| `VECTOR_RAG` | 50.0% | 12.0 | 4 | Passive retrieval without causal distillation |
+| **`AGENT_SLEEP`** | **75.0%** | **7.8** | **1** | **+25 pp success, -42% calls, -83% repeated traps** |
+
 ```bash
 python benchmarks/agent_eval/runner.py
 ```
 
 > [!NOTE]
-> **Scientific Framing**: The Transfer Eval and Sandbox benchmarks validate that `agent-sleep` successfully stores, retrieves, and operationalizes lessons to prevent recurring errors. It provides adaptive decision support for host agents. See [`benchmarks/agent_eval/reproducibility.md`](benchmarks/agent_eval/reproducibility.md) for full methodology and control parameters.
+> **Scientific & Backend Disclosure**:
+> - The sandbox benchmark evaluates agent control dynamics, token efficiency, and error avoidance under controlled test suites.
+> - **Embedding Backends**: High-precision vector similarity relies on `sentence-transformers` (`all-MiniLM-L6-v2`). When dependencies are absent, the library automatically falls back to a deterministic hashed bag-of-words embedding.
+> - Full reproducibility protocols and metric logs are documented in [`benchmarks/agent_eval/results.json`](benchmarks/agent_eval/results.json).
 
 ---
 
@@ -224,10 +237,12 @@ pip install -e ".[all]"
 
 | Tool | When to call |
 |:---|:---|
-| `agent_sleep_recall` | **Before** planning or executing any non-trivial task |
-| `agent_sleep_record` | **During** execution — after each tool failure or success milestone |
+| `agent_sleep_recall` | **Before** planning or executing any non-trivial task — retrieves lessons, rules, causal traps, and self-competence directives |
+| `agent_sleep_record` | **During** execution — after each tool failure or milestone |
 | `agent_sleep_consolidate` | **After** a session ends or when the agent is idle |
-| `agent_sleep_status` | Anytime — to inspect memory health and pending episodes |
+| `agent_sleep_status` | Anytime — inspects memory health, epistemic breakdowns, and pending episodes |
+| `agent_sleep_feedback` | **After** applying retrieved knowledge — records causal outcome attribution and updates utility scores |
+| `agent_sleep_specialize_rule` | When discovering exceptions or boundary conditions for existing rules |
 
 All tools default `scope` to the current working directory name and `db_path` to `.agent_sleep/memory.db` in the project root. No configuration required for the common case.
 

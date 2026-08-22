@@ -39,6 +39,7 @@ class BeliefSystem:
 
 async def promote_candidate_rules(
     episodes: list,
+    historical_episodes: Optional[list] = None,
     belief_system: Optional[BeliefSystem] = None,
     llm_fn: Optional[Callable] = None,
     scope: str = "global",
@@ -46,8 +47,18 @@ async def promote_candidate_rules(
     if belief_system is None:
         belief_system = BeliefSystem(scope=scope)
 
+    # Combine current batch with historical failures, deduplicating by ID
+    combined = list(episodes)
+    seen_ids = {ep.get("id") for ep in episodes if ep.get("id") is not None}
+    if historical_episodes:
+        for hep in historical_episodes:
+            if hep.get("id") not in seen_ids:
+                combined.append(hep)
+                if hep.get("id") is not None:
+                    seen_ids.add(hep.get("id"))
+
     patterns: Dict[tuple, dict] = {}
-    for ep in episodes:
+    for ep in combined:
         outcome = (ep.get("outcome") or "").strip().lower()
         if outcome not in ("failure", "rejected") or ep.get("episode_kind") == "task_verdict":
             continue

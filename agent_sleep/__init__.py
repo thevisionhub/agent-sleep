@@ -7,5 +7,5 @@ from agent_sleep.self_model import SelfModel
 from agent_sleep.hierarchy import ConceptHierarchy
 
 __all__ = ["AgentMemory", "SleepConsolidator", "SelfModel", "ConceptHierarchy"]
-__version__ = "0.1.1-alpha"
+__version__ = "0.1.2-alpha"
 

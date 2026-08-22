@@ -257,3 +257,42 @@ def test_compress_large_cluster_compressed():
     assert "Timeout error" in summary_value
     assert len(deleted) == 6
 
+
+def test_compress_stale_episodes_scope_isolation(tmp_path):
+    """Verify that compressing stale episodes in scope_A does not touch scope_B episodes."""
+    from agent_sleep.storage.db import (
+        ensure_db_initialized,
+        save_episode,
+        mark_episodes_processed,
+        get_stale_episodes,
+        _cursor,
+    )
+    from agent_sleep.consolidator import SleepConsolidator
+
+    db_file = tmp_path / "test_scope_compress.db"
+    ensure_db_initialized(db_path=db_file)
+
+    # Insert 6 processed episodes for repo_A and 6 for repo_B
+    for i in range(6):
+        save_episode("sess_a", "Refactor authentication backend JWT login", "run()", "failure", failure_reason="AuthError", scope="repo_A", db_path=db_file)
+        save_episode("sess_b", "Refactor authentication backend JWT login", "run()", "failure", failure_reason="AuthError", scope="repo_B", db_path=db_file)
+
+    with _cursor(commit=True, db_path=db_file) as cur:
+        # Set all episodes as processed and artificially age them by 20 days
+        cur.execute("UPDATE execution_episodes SET processed_by_sleep=1, timestamp=datetime('now', '-20 days')")
+
+    # Stale episodes for repo_A should only return repo_A episodes
+    stale_a = get_stale_episodes(max_age_days=14.0, scope="repo_A", db_path=db_file)
+    assert len(stale_a) == 6
+    assert all(e["scope"] == "repo_A" for e in stale_a)
+
+    # Run sleep consolidator on repo_A
+    consolidator = SleepConsolidator(scope="repo_A", db_path=db_file)
+    res = consolidator.run("sess_a")
+
+    # repo_A episodes should be compressed/deleted, repo_B episodes must remain intact
+    stale_b = get_stale_episodes(max_age_days=14.0, scope="repo_B", db_path=db_file)
+    assert len(stale_b) == 6
+    assert all(e["scope"] == "repo_B" for e in stale_b)
+
+

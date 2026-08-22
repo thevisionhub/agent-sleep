@@ -47,9 +47,11 @@ class SelfModel:
     Tracks agent competence per task domain and derives operational behavioral policies.
 
     In-memory state, persisted via db.update_competence on each update.
+    Scope-isolated by default.
     """
 
-    def __init__(self, db_path: Optional[Path] = None) -> None:
+    def __init__(self, scope: str = "global", db_path: Optional[Path] = None) -> None:
+        self.scope = scope
         self.db_path = db_path
         self._competence: Dict[str, float] = {}
         self._load_from_db()
@@ -57,19 +59,20 @@ class SelfModel:
     def _load_from_db(self) -> None:
         try:
             from agent_sleep.storage.db import get_all_competencies
-            self._competence = get_all_competencies(db_path=self.db_path)
+            self._competence = get_all_competencies(scope=self.scope, db_path=self.db_path)
         except Exception as e:
             logger.debug(f"Could not load initial competencies from DB: {e}")
 
-    def update(self, domain: str, success: bool, db_path: Optional[Path] = None) -> float:
+    def update(self, domain: str, success: bool, scope: Optional[str] = None, db_path: Optional[Path] = None) -> float:
         """
         Update competence for a domain after one outcome.
 
         Returns the new competence score (0-1).
         """
+        target_scope = scope or self.scope
         target_db = db_path or self.db_path
         outcome = 1.0 if success else 0.0
-        current = self.get_competence(domain, db_path=target_db)
+        current = self.get_competence(domain, scope=target_scope, db_path=target_db)
         new_value = current * (1 - _EMA_ALPHA) + outcome * _EMA_ALPHA
         self._competence[domain] = new_value
 
@@ -80,38 +83,42 @@ class SelfModel:
                 competence=new_value,
                 historical_accuracy=new_value,
                 success=success,
+                scope=target_scope,
                 db_path=target_db,
             )
         except Exception as e:
             logger.warning(f"Could not persist competence update: {e}")
 
-        logger.debug(f"Self-model: {domain} competence {current:.2f} -> {new_value:.2f}")
+        logger.debug(f"Self-model [{target_scope}]: {domain} competence {current:.2f} -> {new_value:.2f}")
         return new_value
 
-    def get_competence(self, domain: str, db_path: Optional[Path] = None) -> float:
+    def get_competence(self, domain: str, scope: Optional[str] = None, db_path: Optional[Path] = None) -> float:
         """Return the current competence score for a domain (0-1)."""
+        target_scope = scope or self.scope
         target_db = db_path or self.db_path
         if domain in self._competence:
             return self._competence[domain]
         try:
             from agent_sleep.storage.db import get_domain_competence
-            record = get_domain_competence(domain, db_path=target_db)
+            record = get_domain_competence(domain, scope=target_scope, db_path=target_db)
             score = float(record.get("competence", 0.5))
             self._competence[domain] = score
             return score
         except Exception:
             return 0.5
 
-    def get_domain_metrics(self, domain: str, db_path: Optional[Path] = None) -> dict:
+    def get_domain_metrics(self, domain: str, scope: Optional[str] = None, db_path: Optional[Path] = None) -> dict:
         """Return full domain metrics including uncertainty and episode counts."""
+        target_scope = scope or self.scope
         target_db = db_path or self.db_path
         try:
             from agent_sleep.storage.db import get_domain_competence
-            return get_domain_competence(domain, db_path=target_db)
+            return get_domain_competence(domain, scope=target_scope, db_path=target_db)
         except Exception:
             return {
+                "scope": target_scope,
                 "domain": domain,
-                "competence": self.get_competence(domain, db_path=target_db),
+                "competence": self.get_competence(domain, scope=target_scope, db_path=target_db),
                 "uncertainty": 0.5,
                 "historical_accuracy": 0.5,
                 "success_count": 1,
@@ -119,12 +126,13 @@ class SelfModel:
                 "total_episodes": 0,
             }
 
-    def get_behavioral_policy(self, domain: str, db_path: Optional[Path] = None) -> dict:
+    def get_behavioral_policy(self, domain: str, scope: Optional[str] = None, db_path: Optional[Path] = None) -> dict:
         """
         Derive an actionable operational policy based on self-competence and Bayesian uncertainty.
         Provides decision support for the host agent's verification intensity and retry budget.
         """
-        metrics = self.get_domain_metrics(domain, db_path=db_path)
+        target_scope = scope or self.scope
+        metrics = self.get_domain_metrics(domain, scope=target_scope, db_path=db_path)
         c = float(metrics.get("competence", 0.5))
         unc = float(metrics.get("uncertainty", 0.5))
         total_ep = int(metrics.get("total_episodes", 0))
@@ -156,6 +164,7 @@ class SelfModel:
             autonomy = "BALANCED"
 
         return {
+            "scope": target_scope,
             "domain": domain,
             "competence": round(c, 2),
             "uncertainty": round(unc, 2),
@@ -171,33 +180,35 @@ class SelfModel:
         """Return all tracked domains and their competence scores."""
         return dict(self._competence)
 
-    def confidence_statement(self, domain: str, db_path: Optional[Path] = None) -> str:
+    def confidence_statement(self, domain: str, scope: Optional[str] = None, db_path: Optional[Path] = None) -> str:
         """
         Return a natural-language confidence directive for prompt injection.
         """
-        policy = self.get_behavioral_policy(domain, db_path=db_path)
+        target_scope = scope or self.scope
+        policy = self.get_behavioral_policy(domain, scope=target_scope, db_path=db_path)
         return f"🛡 [SELF-MODEL: {policy['level']} COMPETENCE IN {domain.upper()}] Policy: {policy['directive']}"
 
 
-def run_self_reflection(episodes: list, db_path: Optional[Path] = None) -> dict:
+def run_self_reflection(episodes: list, scope: str = "global", db_path: Optional[Path] = None) -> dict:
     """
     Process a batch of consolidated episodes to update the self-model.
 
     Returns a summary of competence updates.
     """
-    self_model = SelfModel(db_path=db_path)
+    self_model = SelfModel(scope=scope, db_path=db_path)
     updates: Dict[str, list] = {}
 
     for ep in episodes:
         goal = ep.get("goal") or ""
         action = ep.get("action") or ""
+        ep_scope = ep.get("scope") or scope
         outcome = (ep.get("outcome") or "").strip().lower()
         if outcome not in ("success", "failure"):
             continue
 
         domain = infer_domain(goal + " " + action)
         success = outcome == "success"
-        new_score = self_model.update(domain, success, db_path=db_path)
+        new_score = self_model.update(domain, success, scope=ep_scope, db_path=db_path)
         updates.setdefault(domain, []).append(new_score)
 
     return {
