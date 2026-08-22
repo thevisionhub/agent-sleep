@@ -58,6 +58,25 @@ def _resolve_scope(scope: str) -> str:
         return Path.cwd().name
     return scope
 
+
+def _sanitize_mcp_output(obj: Any) -> Any:
+    """Recursively convert numpy types, custom objects to native Python primitives for clean JSON-RPC serialization."""
+    try:
+        import numpy as np
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+    except ImportError:
+        pass
+    if isinstance(obj, dict):
+        return {k: _sanitize_mcp_output(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_sanitize_mcp_output(x) for x in obj]
+    return obj
+
 # ---------------------------------------------------------------------------
 # MCP Server Definition
 # ---------------------------------------------------------------------------
@@ -66,7 +85,7 @@ try:
     from mcp.server import MCPServer
     app = MCPServer(
         name="agent-sleep",
-        version="0.1.1-alpha",
+        version="0.1.2-alpha",
         instructions=(
             "Agent Sleep persistent cognitive memory system. "
             "Use agent_sleep_recall before tasks to retrieve past lessons and rules. "
@@ -118,7 +137,7 @@ def agent_sleep_recall(
     structured = mem.recall_structured(query, top_k=top_k)
     formatted_prompt = mem.recall(query, top_k=top_k)
 
-    return {
+    return _sanitize_mcp_output({
         "query": query,
         "scope": resolved_scope,
         "has_memories": bool(
@@ -132,7 +151,7 @@ def agent_sleep_recall(
         "causal_hypotheses": structured.get("causal_hypotheses", []),
         "operational_policy": structured.get("operational_policy", {}),
         "cluster_insight": structured.get("cluster_insight"),
-    }
+    })
 
 
 @app.tool(
@@ -176,13 +195,13 @@ def agent_sleep_record(
         failure_reason=failure_reason,
         episode_kind=episode_kind,
     )
-    return {
+    return _sanitize_mcp_output({
         "recorded": True,
         "episode_id": episode_id,
         "session_id": session_id,
         "scope": resolved_scope,
         "outcome": outcome,
-    }
+    })
 
 
 @app.tool(
@@ -211,7 +230,7 @@ def agent_sleep_consolidate(
     consolidator = SleepConsolidator(db_path=resolved_db, scope=resolved_scope)
     report = consolidator.run(session_id=session_id)
     logger.info(f"Consolidation complete: {report}")
-    return report
+    return _sanitize_mcp_output(report)
 
 
 @app.tool(
@@ -238,12 +257,21 @@ def agent_sleep_status(
     resolved_db = _resolve_db(db_path)
     ensure_db_initialized(resolved_db)
 
+    from agent_sleep.storage.embeddings import get_backend_info
+    backend_info = get_backend_info()
+
     with _cursor(db_path=resolved_db) as cur:
         cur.execute("SELECT COUNT(*) FROM semantic_memories WHERE scope IN (?, 'global')", (resolved_scope,))
         mem_count = cur.fetchone()[0]
 
+        cur.execute("SELECT verification_status, COUNT(*) as cnt FROM semantic_memories WHERE scope IN (?, 'global') GROUP BY verification_status", (resolved_scope,))
+        epistemic = {r["verification_status"]: r["cnt"] for r in cur.fetchall()}
+
         cur.execute("SELECT COUNT(*) FROM candidate_rules WHERE scope IN (?, 'global') AND status != 'REFUTED'", (resolved_scope,))
         rule_count = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM causal_hypotheses WHERE scope IN (?, 'global')", (resolved_scope,))
+        causal_count = cur.fetchone()[0]
 
         cur.execute("SELECT COUNT(*) FROM execution_episodes WHERE session_id=? AND processed_by_sleep=0", (session_id,))
         unprocessed_count = cur.fetchone()[0]
@@ -251,15 +279,86 @@ def agent_sleep_status(
         cur.execute("SELECT COUNT(*) FROM execution_episodes")
         total_episodes = cur.fetchone()[0]
 
-    return {
+    return _sanitize_mcp_output({
         "status": "ready",
         "scope": resolved_scope,
         "session_id": session_id,
         "semantic_memories_count": mem_count,
+        "epistemic_status_breakdown": epistemic,
         "active_rules_count": rule_count,
+        "causal_hypotheses_count": causal_count,
         "unprocessed_episodes_for_session": unprocessed_count,
         "total_episodes_all_time": total_episodes,
-    }
+        "embedding_backend": backend_info,
+    })
+
+
+@app.tool(
+    name="agent_sleep_feedback",
+    description=(
+        "Record outcome attribution feedback for retrieved memories. "
+        "Allows the cognitive memory system to update utility scores and promote or quarantine memories."
+    ),
+)
+def agent_sleep_feedback(
+    memory_ids: List[int],
+    outcome: str,
+    was_applied: bool = True,
+    is_causal_contributor: bool = False,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Record utility feedback for retrieved memories.
+
+    Parameters:
+    - memory_ids: List of integer memory IDs retrieved and evaluated.
+    - outcome: 'success', 'failure', or error description.
+    - was_applied: Whether the memories were actively enacted in the task (default: True).
+    - is_causal_contributor: Whether the memory was the primary cause of task resolution (default: False).
+    - db_path: Path to SQLite database. Defaults to .agent_sleep/memory.db in cwd.
+    """
+    from agent_sleep.storage.db import record_memory_utility_feedback
+    resolved_db = _resolve_db(db_path)
+    report = record_memory_utility_feedback(
+        memory_ids=memory_ids,
+        outcome=outcome,
+        was_applied=was_applied,
+        is_causal_contributor=is_causal_contributor,
+        db_path=resolved_db,
+    )
+    return _sanitize_mcp_output(report)
+
+
+@app.tool(
+    name="agent_sleep_specialize_rule",
+    description=(
+        "Specialize an existing behavioral rule with specific conditions and exceptions "
+        "when environmental contradictions or edge cases are encountered."
+    ),
+)
+def agent_sleep_specialize_rule(
+    rule_id: int,
+    condition: str = "",
+    exception: str = "",
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Specialize a rule with explicit context and exceptions.
+
+    Parameters:
+    - rule_id: ID of the candidate rule to specialize.
+    - condition: Specific environment or context where the rule holds.
+    - exception: Specific context or environment where the rule does NOT apply.
+    - db_path: Path to SQLite database. Defaults to .agent_sleep/memory.db in cwd.
+    """
+    from agent_sleep.storage.db import specialize_rule_with_exception
+    resolved_db = _resolve_db(db_path)
+    return _sanitize_mcp_output(specialize_rule_with_exception(
+        rule_id=rule_id,
+        condition=condition,
+        exception=exception,
+        db_path=resolved_db,
+    ))
 
 
 def main():

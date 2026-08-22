@@ -185,11 +185,11 @@ class ConceptHierarchy:
         if idx is None:
             return None
 
-        sim = self._cosine(z, centroids[idx])
-        count = counts[idx]
-        n_obs = outcome_n[idx] if idx < len(outcome_n) else 0
-        mean_outcome = round(outcome_sum[idx] / n_obs, 3) if n_obs > 0 else None
-        example = examples[idx] if idx < len(examples) else ""
+        sim = float(self._cosine(z, centroids[idx]))
+        count = int(counts[idx])
+        n_obs = int(outcome_n[idx]) if idx < len(outcome_n) else 0
+        mean_outcome = round(float(outcome_sum[idx] / n_obs), 3) if n_obs > 0 else None
+        example = str(examples[idx]) if idx < len(examples) else ""
 
         # Qualification and confidence metric:
         # Scales with cosine similarity and sample size (diminishing return above 5 samples)
@@ -204,11 +204,11 @@ class ConceptHierarchy:
             rec_strength = "LOW"
 
         return {
-            "level": level,
-            "similarity": round(sim, 3),
-            "count": count,
+            "level": int(level),
+            "similarity": round(float(sim), 3),
+            "count": int(count),
             "mean_outcome": mean_outcome,
-            "outcome_observations": n_obs,
+            "outcome_observations": int(n_obs),
             "example": example,
             "confidence": confidence,
             "recommendation_strength": rec_strength,
