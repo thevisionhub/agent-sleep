@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-sleep"
+version = "0.1.1-alpha"
+description = "Episodic -> Sleep Consolidation -> Semantic Memory for AI agents"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "srishiva", email = "srishiva1289@gmail.com" }
+]
+keywords = [
+    "ai", "agent", "memory", "consolidation", "episodic",
+    "semantic", "llm", "persistent", "learning"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Minimal runtime dependency; optional packages add higher-quality semantic embeddings.
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+mcp = [
+    "mcp>=2.0.0,<3",
+]
+semantic = [
+    "sentence-transformers>=2.2",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "sentence-transformers>=2.2",
+    "mcp>=2.0.0,<3",
+]
+all = [
+    "sentence-transformers>=2.2",
+    "mcp>=2.0.0,<3",
+]
+
+[project.scripts]
+agent-sleep = "agent_sleep.cli:main"
+agent-sleep-mcp = "agent_sleep.mcp_server:main"
+
+[project.urls]
+Homepage = "https://github.com/srishiva/agent-sleep"
+Issues = "https://github.com/srishiva/agent-sleep/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_sleep*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
