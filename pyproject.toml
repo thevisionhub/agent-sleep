@@ -55,8 +55,8 @@ agent-sleep = "agent_sleep.cli:main"
 agent-sleep-mcp = "agent_sleep.mcp_server:main"
 
 [project.urls]
-Homepage = "https://github.com/srishiva/agent-sleep"
-Issues = "https://github.com/srishiva/agent-sleep/issues"
+Homepage = "https://github.com/thevisionhub/agent-sleep"
+Issues = "https://github.com/thevisionhub/agent-sleep/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -210,12 +210,12 @@ pip install "agent-sleep[all]"
 
 ### From GitHub (latest alpha):
 ```bash
-pip install git+https://github.com/srishiva/agent-sleep.git
+pip install git+https://github.com/thevisionhub/agent-sleep.git
 ```
 
 ### Editable install for development:
 ```bash
-git clone https://github.com/srishiva/agent-sleep.git
+git clone https://github.com/thevisionhub/agent-sleep.git
 cd agent-sleep
 pip install -e ".[all]"
 ```
