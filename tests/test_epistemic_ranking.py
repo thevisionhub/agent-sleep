@@ -21,7 +21,7 @@ def temp_db(tmp_path):
 def test_verified_outranks_unverified_memory(temp_db):
     # Observed memory (trust = 0.50)
     save_semantic_memory(
-        fact="Database Concurrency Lock Advice",
+        fact="Database Concurrency Lock Strategy: Thread Sleep",
         value="Observed advice: Increase thread sleep time",
         memory_type="lesson",
         importance=0.8,
@@ -34,7 +34,7 @@ def test_verified_outranks_unverified_memory(temp_db):
 
     # Verified memory (trust = 1.0)
     save_semantic_memory(
-        fact="Database Concurrency Lock Resolution",
+        fact="Database Concurrency Lock Strategy: WAL Timeout",
         value="Verified fact: Enable WAL mode and set busy_timeout=5000",
         memory_type="lesson",
         importance=0.8,
@@ -45,7 +45,7 @@ def test_verified_outranks_unverified_memory(temp_db):
         db_path=temp_db,
     )
 
-    recalled = recall_memories("Database Concurrency Lock", scopes=["billing"], min_score=0.01, db_path=temp_db)
+    recalled = recall_memories("Database Concurrency Lock Strategy", scopes=["billing"], min_score=0.01, db_path=temp_db)
     assert len(recalled) == 2
     # Verified memory must rank FIRST and have higher score than observed memory
     assert recalled[0]["verification_status"] == "verified"

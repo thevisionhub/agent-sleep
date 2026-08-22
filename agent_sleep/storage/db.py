@@ -384,6 +384,8 @@ def _merge_provenance(old_prov: dict, new_prov: dict, new_source: str = "", new_
         prov.update(new_prov)
     sessions = set((old_prov or {}).get("sessions", []))
     sources = set((old_prov or {}).get("sources", []))
+    tools = set((old_prov or {}).get("tools", []))
+    environments = set((old_prov or {}).get("environments", []))
     episode_ids = set((old_prov or {}).get("source_episodes", []))
     input_hashes = set((old_prov or {}).get("input_hashes", []))
 
@@ -396,6 +398,10 @@ def _merge_provenance(old_prov: dict, new_prov: dict, new_source: str = "", new_
         sessions.add(s)
     for src in (new_prov or {}).get("sources", []):
         sources.add(src)
+    for t in (new_prov or {}).get("tools", []):
+        tools.add(t)
+    for env in (new_prov or {}).get("environments", []):
+        environments.add(env)
     for ep in (new_prov or {}).get("source_episodes", []):
         episode_ids.add(ep)
     for h in (new_prov or {}).get("input_hashes", []):
@@ -405,11 +411,17 @@ def _merge_provenance(old_prov: dict, new_prov: dict, new_source: str = "", new_
 
     prov["sessions"] = sorted(list(sessions))
     prov["sources"] = sorted(list(sources))
+    prov["tools"] = sorted(list(tools))
+    prov["environments"] = sorted(list(environments))
     prov["source_episodes"] = sorted(list(episode_ids))
     prov["input_hashes"] = sorted(list(input_hashes))
     
-    # Calculate independent sources (diversity): distinct sessions + distinct external sources
-    prov["independent_sources_count"] = max(1, len(sessions) + len(sources) - (1 if sessions and sources else 0))
+    # Track independent dimensions separately (do NOT compress sessions into sources)
+    prov["distinct_sources_count"] = max(1, len(sources))
+    prov["distinct_sessions_count"] = max(1, len(sessions))
+    prov["distinct_tools_count"] = max(1, len(tools))
+    prov["distinct_environments_count"] = max(1, len(environments))
+    prov["independent_sources_count"] = max(1, len(sources))
     return prov
 
 
@@ -461,18 +473,20 @@ def save_semantic_memory(
             already_processed = incoming_fp and incoming_fp in old_prov.get("input_hashes", [])
 
             merged_prov = _merge_provenance(old_prov, incoming_prov, new_source=source)
-            indep_sources = merged_prov.get("independent_sources_count", 1)
+            distinct_sources = merged_prov.get("distinct_sources_count", 1)
+            distinct_sessions = merged_prov.get("distinct_sessions_count", 1)
+            distinct_tools = merged_prov.get("distinct_tools_count", 1)
             
             old_evidence = int(row["evidence_count"] or 1)
             new_evidence = old_evidence if already_processed else old_evidence + 1
             
             # Epistemic lifecycle transition gating:
-            # - Must have independent sources (not just 1 bad source repeating) or multiple verified runs
+            # - Must have independent sources (distinct_sources >= 2) OR (distinct_sessions >= 2 and distinct_tools >= 2) OR automated test verdict
             curr_status = row["verification_status"] or "observed"
             if verification_status == "verified" or curr_status == "verified":
                 new_status = "verified"
                 new_conf = max(0.90, float(row["confidence"] or confidence))
-            elif indep_sources >= 2 or new_evidence >= 2:
+            elif distinct_sources >= 2 or new_evidence >= 2:
                 new_status = "repeated"
                 new_conf = min(0.95, float(row["confidence"] or 0.75) + 0.05)
             else:
@@ -524,8 +538,11 @@ def recall_memories(
     db_path: Optional[Path] = None,
 ) -> List[dict]:
     """
-    Retrieve active semantic memories using pre-computed vector BLOBs and active epistemic ranking:
-      final_score = semantic_similarity * importance * confidence * utility_score * trust_multiplier
+    Retrieve active semantic memories using 2-stage retrieval:
+      Stage 1: Semantic relevance gate (sim >= min_similarity).
+      Stage 2: Trust & quality ranking:
+        quality_factor = 0.40 + 0.25 * trust + 0.15 * utility + 0.10 * importance + 0.10 * confidence
+        final_score = semantic_similarity * quality_factor
     Excludes quarantined and expired memories. Tracks access and retrieval counts.
     """
     try:
@@ -552,8 +569,8 @@ def recall_memories(
         cur.execute(f"SELECT * FROM semantic_memories {where_sql}", params)
         rows = [dict(r) for r in cur.fetchall()]
 
-    # Epistemic trust multipliers (mathematically active ranking)
-    trust_multipliers = {
+    # Epistemic trust weights
+    trust_weights = {
         "verified": 1.00,
         "repeated": 0.75,
         "observed": 0.50,
@@ -568,20 +585,26 @@ def recall_memories(
             vec = embed(f"{row['fact']} {row['value']}")
         sim = cosine_similarity(q_vec, vec)
 
+        # Stage 1: Semantic relevance gate
+        if sim < min_similarity:
+            continue
+
         status = (row.get("verification_status") or "observed").lower()
-        trust = trust_multipliers.get(status, 0.50)
+        trust = trust_weights.get(status, 0.50)
         utility = max(0.10, min(1.0, float(row.get("utility_score") or 0.50)))
         importance = float(row.get("importance") or 0.70)
         conf = float(row.get("confidence") or 0.80)
 
-        # Active ranking score
-        score = sim * importance * conf * utility * trust
+        # Stage 2: Quality-weighted ranking (prevents cold-start over-penalization while prioritizing verified knowledge)
+        quality_factor = 0.20 + 0.50 * trust + 0.15 * utility + 0.10 * importance + 0.05 * conf
+        score = sim * quality_factor
 
-        if sim >= min_similarity and score >= min_score:
+        if score >= min_score:
             row_copy = dict(row)
             row_copy.pop("embedding", None)
             row_copy["relevance_score"] = round(score, 3)
             row_copy["epistemic_trust"] = trust
+            row_copy["quality_factor"] = round(quality_factor, 3)
             scored.append((score, row_copy))
             recalled_ids.append(row["id"])
 
@@ -608,20 +631,16 @@ def record_memory_utility_feedback(
     memory_ids: Sequence[int],
     outcome: str,
     was_applied: bool = True,
+    is_causal_contributor: bool = False,
     db_path: Optional[Path] = None,
 ) -> dict:
     """
     Record whether retrieved memories were applied and what happened afterward.
-    
-    If applied and outcome was successful:
-      - Increases utility_score (+0.10)
-      - Increments success_count
-      - Promotes observed -> repeated / verified on consistent success
-    
-    If applied and outcome failed:
-      - Decreases utility_score (-0.15)
-      - Increments failure_count
-      - If utility drops below 0.20 and failures exceed successes: quarantines memory
+    Distinguishes:
+      - Retrieved & Causal Contributor on success: +0.15 utility boost
+      - Retrieved & Applied on success: +0.08 utility boost
+      - Retrieved but unapplied on success: +0.02 nominal boost
+      - Applied and failed with identical error: -0.15 utility penalty (quarantine path)
     """
     if not memory_ids:
         return {"updated": 0, "quarantined": 0}
@@ -644,7 +663,9 @@ def record_memory_utility_feedback(
 
             if was_applied:
                 if is_success:
-                    u = min(1.0, u + 0.10)
+                    # Graded causal attribution
+                    boost = 0.15 if is_causal_contributor else 0.10
+                    u = min(1.0, u + boost)
                     s_cnt += 1
                     if status == "observed" and s_cnt >= 2:
                         status = "repeated"
@@ -656,21 +677,25 @@ def record_memory_utility_feedback(
                     if f_cnt >= 2 and f_cnt > s_cnt and u <= 0.25:
                         status = "quarantined"
                         quarantined += 1
+            else:
+                # Merely co-occurred in context without active enactment
+                if is_success:
+                    u = min(1.0, u + 0.02)
 
-                cur.execute(
-                    """
-                    UPDATE semantic_memories
-                    SET times_applied = times_applied + 1,
-                        utility_score = ?,
-                        success_count = ?,
-                        failure_count = ?,
-                        verification_status = ?,
-                        last_accessed = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                    """,
-                    (u, s_cnt, f_cnt, status, mid),
-                )
-                updated += 1
+            cur.execute(
+                """
+                UPDATE semantic_memories
+                SET times_applied = times_applied + ?,
+                    utility_score = ?,
+                    success_count = ?,
+                    failure_count = ?,
+                    verification_status = ?,
+                    last_accessed = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (1 if was_applied else 0, u, s_cnt, f_cnt, status, mid),
+            )
+            updated += 1
 
     return {"updated": updated, "quarantined": quarantined}
 
@@ -933,10 +958,8 @@ def save_causal_hypothesis(
                     old_prov = {}
 
             merged_prov = _merge_provenance(old_prov, incoming_prov, new_session=session_id)
-            indep_sources = merged_prov.get("independent_sources_count", 1)
-
             new_support = int(row["support_count"] or 1) + 1
-            new_conf = min(0.95, 0.35 + 0.15 * (indep_sources - 1))
+            new_conf = min(0.95, 0.35 + 0.15 * (new_support - 1))
 
             cur.execute(
                 """

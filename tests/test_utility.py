@@ -74,3 +74,49 @@ def test_utility_feedback_failure_penalty(temp_db):
         assert row["success_count"] == 0
         assert row["failure_count"] == 1
         assert row["utility_score"] == 0.35  # 0.50 - 0.15
+
+
+def test_utility_feedback_causal_attribution(temp_db):
+    memory = AgentMemory(session_id="s_util3", scope="global", db_path=temp_db)
+
+    # 1. Memory A: merely retrieved (not applied)
+    save_semantic_memory(
+        fact="Memory A: General tip",
+        value="Clean code practices",
+        memory_type="procedural",
+        utility_score=0.50,
+        db_path=temp_db,
+    )
+    # 2. Memory B: applied and verified as direct causal contributor
+    save_semantic_memory(
+        fact="Memory B: Explicit lock fix",
+        value="Pass timeout=5.0 to acquire()",
+        memory_type="procedural",
+        utility_score=0.50,
+        db_path=temp_db,
+    )
+
+    recalled_a = recall_memories("General tip", scopes=["global"], db_path=temp_db)
+    recalled_b = recall_memories("Explicit lock fix", scopes=["global"], db_path=temp_db)
+    id_a = recalled_a[0]["id"]
+    id_b = recalled_b[0]["id"]
+
+    # Memory A was present but not applied
+    memory.record_memory_feedback([id_a], outcome="success", was_applied=False)
+    # Memory B was actively applied and was the causal contributor
+    memory.record_memory_feedback([id_b], outcome="success", was_applied=True, is_causal_contributor=True)
+
+    with _cursor(db_path=temp_db) as cur:
+        cur.execute("SELECT utility_score, times_applied FROM semantic_memories WHERE id=?", (id_a,))
+        row_a = cur.fetchone()
+        cur.execute("SELECT utility_score, times_applied FROM semantic_memories WHERE id=?", (id_b,))
+        row_b = cur.fetchone()
+
+        # Unapplied memory receives nominal co-occurrence boost (+0.02)
+        assert row_a["utility_score"] == 0.52
+        assert row_a["times_applied"] == 0
+
+        # Causal contributor receives full attribution boost (+0.15)
+        assert row_b["utility_score"] == 0.65
+        assert row_b["times_applied"] == 1
+

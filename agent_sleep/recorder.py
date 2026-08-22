@@ -126,6 +126,7 @@ class AgentMemory:
         memory_ids: Sequence[int],
         outcome: str,
         was_applied: bool = True,
+        is_causal_contributor: bool = False,
     ) -> dict:
         """
         Record whether retrieved memories were applied and what happened afterward.
@@ -135,6 +136,7 @@ class AgentMemory:
             memory_ids=memory_ids,
             outcome=outcome,
             was_applied=was_applied,
+            is_causal_contributor=is_causal_contributor,
             db_path=self.db_path,
         )
 

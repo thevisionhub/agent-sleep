@@ -69,3 +69,26 @@ def test_independent_sources_promote_memory(temp_db):
         row = cur.fetchone()
         assert row["verification_status"] == "repeated"
         assert row["evidence_count"] >= 2
+
+
+def test_multiple_sessions_same_source_does_not_inflate_source_diversity(temp_db):
+    """Verifies that 10 different sessions from 1 single scraper do NOT count as source diversity."""
+    import json
+    for i in range(10):
+        save_semantic_memory(
+            fact="Flaky API Endpoint",
+            value="Returns error 503 during peak hours",
+            memory_type="lesson",
+            verification_status="observed",
+            source="single_scraper",
+            provenance={"sessions": [f"sess_{i}"], "sources": ["single_scraper"]},
+            db_path=temp_db,
+        )
+
+    with _cursor(db_path=temp_db) as cur:
+        cur.execute("SELECT provenance FROM semantic_memories WHERE fact='Flaky API Endpoint'")
+        row = cur.fetchone()
+        prov = json.loads(row["provenance"])
+        assert prov["distinct_sources_count"] == 1, "Must recognize only 1 single external source"
+        assert prov["distinct_sessions_count"] == 10, "Must track 10 separate sessions"
+
