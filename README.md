@@ -22,38 +22,69 @@ Every modern AI agent framework (LangChain, AutoGen, CrewAI, OpenAI Assistants) 
 ### Step 1 — Install and generate your config
 
 ```bash
-# Option A: Install from GitHub with MCP extras
+# Option A: Install from GitHub with pip (recommended)
 pip install "agent-sleep[mcp] @ git+https://github.com/thevisionhub/agent-sleep.git"
 
 # Option B: Local editable install (if cloned)
-cd path/to/agent-sleep
+git clone https://github.com/thevisionhub/agent-sleep.git
+cd agent-sleep
 pip install -e ".[mcp]"
 
 # Option C: Zero-install via uvx (if uv is installed)
 uvx --from "git+https://github.com/thevisionhub/agent-sleep.git" agent-sleep-mcp
+```
 
-# Generate your MCP configuration snippet:
+After installing, generate your platform-specific config snippet:
+```bash
 agent-sleep init
 ```
 
-`agent-sleep init` auto-detects your OS and prints the JSON snippet to paste into your MCP client's config file. No hand-editing required.
+`agent-sleep init` auto-detects your OS and prints the exact JSON snippet to paste into your MCP client.
 
-### Step 2 — Paste the config snippet
+### Step 2 — Paste the config snippet into your MCP client
 
-The `init` command prints exactly what to paste and where. Example output for Claude Desktop on macOS:
+#### For Claude Desktop:
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "agent-sleep": {
+      "command": "agent-sleep-mcp"
+    }
+  }
+}
+```
+*(Or if using zero-install `uvx` without pip install:)*
+```json
+{
+  "mcpServers": {
+    "agent-sleep": {
       "command": "uvx",
-      "args": ["agent-sleep-mcp"]
+      "args": [
+        "--from",
+        "git+https://github.com/thevisionhub/agent-sleep.git",
+        "agent-sleep-mcp"
+      ]
     }
   }
 }
 ```
 
-Paste that into `~/Library/Application Support/Claude/claude_desktop_config.json`, restart Claude, and you're done.
+#### For Antigravity / Cursor / Cline:
+Add to your `mcp_config.json` or `.cursor/mcp.json`:
+```json
+{
+  "mcpServers": {
+    "agent-sleep": {
+      "command": "agent-sleep-mcp"
+    }
+  }
+}
+```
+
+Restart your MCP client, and you're done.
 
 ### Step 3 — Ask your agent to use it
 

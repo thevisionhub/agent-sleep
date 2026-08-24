@@ -61,7 +61,7 @@ def _cmd_init(args) -> None:
         "mcpServers": {
             "agent-sleep": {
                 "command": "uvx",
-                "args": ["agent-sleep-mcp"],
+                "args": ["--from", "git+https://github.com/thevisionhub/agent-sleep.git", "agent-sleep-mcp"],
                 "env": {
                     "AGENT_SLEEP_DB": str(db_path).replace("\\", "/")
                 }
