@@ -22,12 +22,18 @@ Every modern AI agent framework (LangChain, AutoGen, CrewAI, OpenAI Assistants) 
 ### Step 1 — Install and generate your config
 
 ```bash
-# Option A: zero-install (recommended)
-uvx agent-sleep-mcp
+# Option A: Install from GitHub with MCP extras
+pip install "agent-sleep[mcp] @ git+https://github.com/thevisionhub/agent-sleep.git"
 
-# Option B: install first, then run the init helper
-pip install "agent-sleep[mcp]"
-agent-sleep init     # prints the correct config snippet for your platform
+# Option B: Local editable install (if cloned)
+cd path/to/agent-sleep
+pip install -e ".[mcp]"
+
+# Option C: Zero-install via uvx (if uv is installed)
+uvx --from "git+https://github.com/thevisionhub/agent-sleep.git" agent-sleep-mcp
+
+# Generate your MCP configuration snippet:
+agent-sleep init
 ```
 
 `agent-sleep init` auto-detects your OS and prints the JSON snippet to paste into your MCP client's config file. No hand-editing required.
@@ -210,22 +216,17 @@ print(context)
 
 ## Installation
 
-### Quick install with MCP support:
+### From GitHub (Latest Alpha with MCP):
 ```bash
-pip install "agent-sleep[mcp]"
+pip install "agent-sleep[mcp] @ git+https://github.com/thevisionhub/agent-sleep.git"
 ```
 
-### With full semantic embeddings (recommended):
+### With full semantic embeddings (`sentence-transformers`):
 ```bash
-pip install "agent-sleep[all]"
+pip install "agent-sleep[all] @ git+https://github.com/thevisionhub/agent-sleep.git"
 ```
 
-### From GitHub (latest alpha):
-```bash
-pip install git+https://github.com/thevisionhub/agent-sleep.git
-```
-
-### Editable install for development:
+### Editable install for local development:
 ```bash
 git clone https://github.com/thevisionhub/agent-sleep.git
 cd agent-sleep
